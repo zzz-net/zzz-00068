@@ -33,6 +33,7 @@ const statusConfig: Record<StatusBadgeStatus, { bg: string; text: string; label:
   triaging: { bg: 'bg-amber-100', text: 'text-amber-700', label: '分诊中' },
   triage_confirmed: { bg: 'bg-emerald-100', text: 'text-emerald-700', label: '已入床' },
   triage_rejected: { bg: 'bg-rose-100', text: 'text-rose-600', label: '已退回' },
+  triage_undone: { bg: 'bg-orange-100', text: 'text-orange-700', label: '已撤销' },
 
   in_bed: { bg: 'bg-blue-100', text: 'text-blue-700', label: '在床' },
   discharged: { bg: 'bg-emerald-100', text: 'text-emerald-700', label: '已出床' },

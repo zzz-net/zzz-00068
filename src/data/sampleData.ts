@@ -1,4 +1,5 @@
 import type {
+  Campus,
   Nurse,
   Bed,
   IsolationRule,
@@ -10,6 +11,7 @@ import type {
   OperationLog,
   AbnormalRecord,
   CheckIn,
+  TriageUndoRecord,
 } from '../types';
 import { getTodayStr, parseLocalTime } from '../lib/utils';
 
@@ -21,27 +23,34 @@ function parseTodayTime(hhmm: string): number {
   return parseLocalTime(todayStr, hhmm);
 }
 
+const campuses: Campus[] = [
+  { id: 'campus-main', name: '总院', timezone: 'Asia/Shanghai', checkInEarlyMin: 60, checkInLateMin: 30, active: true, createdAt: now - 60 * dayMs },
+  { id: 'campus-east', name: '东院区', timezone: 'Asia/Shanghai', checkInEarlyMin: 45, checkInLateMin: 20, active: true, createdAt: now - 45 * dayMs },
+];
+
+const MAIN_CAMPUS = 'campus-main';
+
 const nurses: Nurse[] = [
-  { id: 'nurse-001', name: '张管理', role: 'admin', password: '123456', createdAt: now - 30 * dayMs },
-  { id: 'nurse-002', name: '李高级', role: 'senior', password: '123456', createdAt: now - 25 * dayMs },
-  { id: 'nurse-003', name: '王高级', role: 'senior', password: '123456', createdAt: now - 20 * dayMs },
-  { id: 'nurse-004', name: '赵普通', role: 'normal', password: '123456', createdAt: now - 15 * dayMs },
-  { id: 'nurse-005', name: '钱普通', role: 'normal', password: '123456', createdAt: now - 10 * dayMs },
+  { id: 'nurse-001', name: '张管理', role: 'admin', password: '123456', campusId: MAIN_CAMPUS, createdAt: now - 30 * dayMs },
+  { id: 'nurse-002', name: '李高级', role: 'senior', password: '123456', campusId: MAIN_CAMPUS, createdAt: now - 25 * dayMs },
+  { id: 'nurse-003', name: '王高级', role: 'senior', password: '123456', campusId: MAIN_CAMPUS, createdAt: now - 20 * dayMs },
+  { id: 'nurse-004', name: '赵普通', role: 'normal', password: '123456', campusId: MAIN_CAMPUS, createdAt: now - 15 * dayMs },
+  { id: 'nurse-005', name: '钱普通', role: 'normal', password: '123456', campusId: MAIN_CAMPUS, createdAt: now - 10 * dayMs },
 ];
 
 const beds: Bed[] = [
-  { id: 'bed-001', bedNumber: 'A-1', zone: 'A', type: 'normal', status: 'occupied', currentPatientId: 'patient-001', currentAdmissionId: 'admission-001', createdAt: now - 60 * dayMs },
-  { id: 'bed-002', bedNumber: 'A-2', zone: 'A', type: 'normal', status: 'occupied', currentPatientId: 'patient-002', currentAdmissionId: 'admission-002', createdAt: now - 58 * dayMs },
-  { id: 'bed-003', bedNumber: 'A-3', zone: 'A', type: 'normal', status: 'idle', createdAt: now - 55 * dayMs },
-  { id: 'bed-004', bedNumber: 'A-4', zone: 'A', type: 'normal', status: 'cleaning', notes: '终末消毒中', createdAt: now - 50 * dayMs },
-  { id: 'bed-005', bedNumber: 'A-5', zone: 'A', type: 'negative', status: 'isolated', currentPatientId: 'patient-003', currentAdmissionId: 'admission-003', notes: '新冠隔离中', createdAt: now - 45 * dayMs },
-  { id: 'bed-006', bedNumber: 'A-6', zone: 'A', type: 'wheelchair', status: 'idle', createdAt: now - 40 * dayMs },
-  { id: 'bed-007', bedNumber: 'B-7', zone: 'B', type: 'normal', status: 'idle', createdAt: now - 35 * dayMs },
-  { id: 'bed-008', bedNumber: 'B-8', zone: 'B', type: 'normal', status: 'idle', createdAt: now - 30 * dayMs },
-  { id: 'bed-009', bedNumber: 'B-9', zone: 'B', type: 'normal', status: 'idle', createdAt: now - 25 * dayMs },
-  { id: 'bed-010', bedNumber: 'B-10', zone: 'B', type: 'normal', status: 'idle', createdAt: now - 20 * dayMs },
-  { id: 'bed-011', bedNumber: 'B-11', zone: 'B', type: 'negative', status: 'idle', createdAt: now - 15 * dayMs },
-  { id: 'bed-012', bedNumber: 'B-12', zone: 'B', type: 'wheelchair', status: 'idle', createdAt: now - 10 * dayMs },
+  { id: 'bed-001', bedNumber: 'A-1', zone: 'A', type: 'normal', department: '呼吸内科', status: 'occupied', currentPatientId: 'patient-001', currentAdmissionId: 'admission-001', campusId: MAIN_CAMPUS, createdAt: now - 60 * dayMs },
+  { id: 'bed-002', bedNumber: 'A-2', zone: 'A', type: 'normal', department: '心内科', status: 'occupied', currentPatientId: 'patient-002', currentAdmissionId: 'admission-002', campusId: MAIN_CAMPUS, createdAt: now - 58 * dayMs },
+  { id: 'bed-003', bedNumber: 'A-3', zone: 'A', type: 'normal', department: '感染科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 55 * dayMs },
+  { id: 'bed-004', bedNumber: 'A-4', zone: 'A', type: 'normal', department: '内分泌科', status: 'cleaning', notes: '终末消毒中', campusId: MAIN_CAMPUS, createdAt: now - 50 * dayMs },
+  { id: 'bed-005', bedNumber: 'A-5', zone: 'A', type: 'negative', department: '感染科', status: 'isolated', currentPatientId: 'patient-003', currentAdmissionId: 'admission-003', notes: '新冠隔离中', campusId: MAIN_CAMPUS, createdAt: now - 45 * dayMs },
+  { id: 'bed-006', bedNumber: 'A-6', zone: 'A', type: 'wheelchair', department: '神经内科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 40 * dayMs },
+  { id: 'bed-007', bedNumber: 'B-7', zone: 'B', type: 'normal', department: '骨科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 35 * dayMs },
+  { id: 'bed-008', bedNumber: 'B-8', zone: 'B', type: 'normal', department: '神经内科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 30 * dayMs },
+  { id: 'bed-009', bedNumber: 'B-9', zone: 'B', type: 'normal', department: '内分泌科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 25 * dayMs },
+  { id: 'bed-010', bedNumber: 'B-10', zone: 'B', type: 'normal', department: '消化内科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 20 * dayMs },
+  { id: 'bed-011', bedNumber: 'B-11', zone: 'B', type: 'negative', department: '感染科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 15 * dayMs },
+  { id: 'bed-012', bedNumber: 'B-12', zone: 'B', type: 'wheelchair', department: '骨科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 10 * dayMs },
 ];
 
 const isolationRules: IsolationRule[] = [
@@ -57,14 +66,14 @@ const timeSlots: TimeSlot[] = [
 ];
 
 const patients: Patient[] = [
-  { id: 'patient-001', name: '陈大伟', gender: 'male', age: 65, phone: '13800138001', idCard: '110101196001011234', diagnosis: '慢性支气管炎急性加重', diseaseType: '呼吸系统', createdAt: now - 15 * dayMs },
-  { id: 'patient-002', name: '刘美丽', gender: 'female', age: 58, phone: '13800138002', idCard: '110101196702022345', diagnosis: '高血压3级', diseaseType: '心血管系统', createdAt: now - 12 * dayMs },
-  { id: 'patient-003', name: '王建国', gender: 'male', age: 72, phone: '13800138003', idCard: '110101195303033456', diagnosis: '新型冠状病毒感染', diseaseType: '传染性疾病', createdAt: now - 5 * dayMs },
-  { id: 'patient-004', name: '赵秀兰', gender: 'female', age: 80, phone: '13800138004', idCard: '110101194504044567', diagnosis: '糖尿病足', diseaseType: '内分泌系统', createdAt: now - 10 * dayMs },
-  { id: 'patient-005', name: '孙志强', gender: 'male', age: 45, phone: '13800138005', idCard: '110101198005055678', diagnosis: '流行性感冒', diseaseType: '传染性疾病', createdAt: now - 3 * dayMs },
-  { id: 'patient-006', name: '周婷婷', gender: 'female', age: 32, phone: '13800138006', idCard: '110101199306066789', diagnosis: '急性胃肠炎', diseaseType: '消化系统', createdAt: now - 2 * dayMs },
-  { id: 'patient-007', name: '吴明辉', gender: 'male', age: 55, phone: '13800138007', idCard: '110101197007077890', diagnosis: '脑梗死后遗症', diseaseType: '神经系统', createdAt: now - 20 * dayMs },
-  { id: 'patient-008', name: '郑丽华', gender: 'female', age: 68, phone: '13800138008', idCard: '110101195708088901', diagnosis: '髋关节置换术后', diseaseType: '骨科术后', createdAt: now - 7 * dayMs },
+  { id: 'patient-001', name: '陈大伟', gender: 'male', age: 65, phone: '13800138001', idCard: '110101196001011234', birthday: '1960-01-01', diagnosis: '慢性支气管炎急性加重', diseaseType: '呼吸系统', createdAt: now - 15 * dayMs },
+  { id: 'patient-002', name: '刘美丽', gender: 'female', age: 58, phone: '13800138002', idCard: '110101196702022345', birthday: '1967-02-02', diagnosis: '高血压3级', diseaseType: '心血管系统', createdAt: now - 12 * dayMs },
+  { id: 'patient-003', name: '王建国', gender: 'male', age: 72, phone: '13800138003', idCard: '110101195303033456', birthday: '1953-03-03', diagnosis: '新型冠状病毒感染', diseaseType: '传染性疾病', createdAt: now - 5 * dayMs },
+  { id: 'patient-004', name: '赵秀兰', gender: 'female', age: 80, phone: '13800138004', idCard: '110101194504044567', birthday: '1945-04-04', diagnosis: '糖尿病足', diseaseType: '内分泌系统', createdAt: now - 10 * dayMs },
+  { id: 'patient-005', name: '孙志强', gender: 'male', age: 45, phone: '13800138005', idCard: '110101198005055678', birthday: '1980-05-05', diagnosis: '流行性感冒', diseaseType: '传染性疾病', createdAt: now - 3 * dayMs },
+  { id: 'patient-006', name: '周婷婷', gender: 'female', age: 32, phone: '13800138006', idCard: '110101199306066789', birthday: '1993-06-06', diagnosis: '急性胃肠炎', diseaseType: '消化系统', createdAt: now - 2 * dayMs },
+  { id: 'patient-007', name: '吴明辉', gender: 'male', age: 55, phone: '13800138007', idCard: '110101197007077890', birthday: '1970-07-07', diagnosis: '脑梗死后遗症', diseaseType: '神经系统', createdAt: now - 20 * dayMs },
+  { id: 'patient-008', name: '郑丽华', gender: 'female', age: 68, phone: '13800138008', idCard: '110101195708088901', birthday: '1957-08-08', diagnosis: '髋关节置换术后', diseaseType: '骨科术后', createdAt: now - 7 * dayMs },
 ];
 
 const appointments: Appointment[] = [
@@ -111,7 +120,10 @@ const checkIns: CheckIn[] = [
   { id: 'checkin-001', appointmentId: 'appointment-004', patientId: 'patient-005', phone: '13800138005', checkInTime: now - 30 * 60 * 1000, status: 'checked_in', arrivalFlag: 'on_time', createdAt: now - 30 * 60 * 1000 },
 ];
 
+const triageUndoRecords: TriageUndoRecord[] = [];
+
 export interface SampleData {
+  campuses: Campus[];
   nurses: Nurse[];
   beds: Bed[];
   isolationRules: IsolationRule[];
@@ -123,9 +135,11 @@ export interface SampleData {
   operationLogs: OperationLog[];
   abnormalRecords: AbnormalRecord[];
   checkIns: CheckIn[];
+  triageUndoRecords: TriageUndoRecord[];
 }
 
 export const sampleData: SampleData = {
+  campuses,
   nurses,
   beds,
   isolationRules,
@@ -137,9 +151,11 @@ export const sampleData: SampleData = {
   operationLogs,
   abnormalRecords,
   checkIns,
+  triageUndoRecords,
 };
 
 export const SAMPLE_DATA_COUNTS = {
+  campuses: campuses.length,
   nurses: nurses.length,
   beds: beds.length,
   isolationRules: isolationRules.length,
@@ -151,4 +167,5 @@ export const SAMPLE_DATA_COUNTS = {
   operationLogs: operationLogs.length,
   abnormalRecords: abnormalRecords.length,
   checkIns: checkIns.length,
+  triageUndoRecords: triageUndoRecords.length,
 };

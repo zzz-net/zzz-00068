@@ -35,9 +35,17 @@ import type {
   RestoreHistoryRecord,
   CheckIn,
   CheckInStatus,
+  Campus,
+  TriageUndoRecord,
+  AppointmentQueryType,
+  AppointmentQueryResult,
 } from '../types';
 import { sampleData } from '../data/sampleData';
-import { parseLocalTime, getTodayStr } from '../lib/utils';
+import {
+  parseLocalTime,
+  getTodayStr,
+  birthdayMatches,
+} from '../lib/utils';
 
 const STORE_KEY = 'dayward-board:v1';
 
@@ -59,6 +67,8 @@ type PersistedState = {
   autoBackupSnapshots: AutoBackupSnapshot[];
   restoreHistory: RestoreHistoryRecord[];
   checkIns: CheckIn[];
+  campuses: Campus[];
+  triageUndoRecords: TriageUndoRecord[];
 };
 
 type AppState = PersistedState & {
@@ -75,6 +85,11 @@ type AppState = PersistedState & {
   updateNurse: (id: string, patch: Partial<Nurse>) => void;
   updateNurseRole: (id: string, role: NurseRole) => void;
   deleteNurse: (id: string) => void;
+
+  addCampus: (c: Omit<Campus, 'id' | 'createdAt'>) => void;
+  updateCampus: (id: string, patch: Partial<Campus>) => void;
+  deleteCampus: (id: string) => void;
+  getActiveCampus: () => Campus | null;
 
   addIsolationRule: (r: Omit<IsolationRule, 'id' | 'createdAt'>) => void;
   updateIsolationRule: (id: string, patch: Partial<IsolationRule>) => void;
@@ -108,15 +123,25 @@ type AppState = PersistedState & {
 
   handleAbnormal: (abnormalId: string, nurseId: string) => void;
 
-  checkInByPhone: (phone: string) => { success: boolean; error?: string; data?: CheckIn };
-  checkInByAppointment: (appointmentId: string) => { success: boolean; error?: string; data?: CheckIn };
-  getTriageQueue: () => CheckIn[];
-  confirmTriage: (checkInId: string, nurseId: string, overrideBedId?: string) => { success: boolean; error?: string };
+  queryTodayAppointments: (
+    queryType: AppointmentQueryType,
+    params: { phone?: string; appointmentId?: string; name?: string; birthday?: string },
+    campusId?: string,
+  ) => { success: boolean; error?: string; data?: AppointmentQueryResult[] };
+  checkInByPhone: (phone: string, campusId?: string) => { success: boolean; error?: string; data?: CheckIn };
+  checkInByAppointment: (appointmentId: string, campusId?: string) => { success: boolean; error?: string; data?: CheckIn };
+  checkInByNameBirthday: (name: string, birthday: string, campusId?: string) => { success: boolean; error?: string; data?: CheckIn };
+  getTriageQueue: (campusId?: string) => CheckIn[];
+  confirmTriage: (checkInId: string, nurseId: string, overrideBedId?: string, department?: string) => { success: boolean; error?: string };
   rejectTriage: (checkInId: string, nurseId: string, reason: string) => { success: boolean; error?: string };
-  modifyTriage: (checkInId: string, nurseId: string, patch: Partial<Pick<CheckIn, 'status' | 'conflictReason' | 'triageNote' | 'suggestedBedId'>>) => { success: boolean; error?: string };
+  reassignTriage: (checkInId: string, nurseId: string, newBedId: string, department?: string) => { success: boolean; error?: string };
+  undoTriage: (checkInId: string, nurseId: string, reason: string) => { success: boolean; error?: string };
+  restoreTriage: (undoId: string, nurseId: string) => { success: boolean; error?: string };
+  modifyTriage: (checkInId: string, nurseId: string, patch: Partial<Pick<CheckIn, 'status' | 'conflictReason' | 'triageNote' | 'suggestedBedId' | 'assignedDepartment'>>) => { success: boolean; error?: string };
+  getUndoRecords: (checkInId?: string) => TriageUndoRecord[];
 
   importSampleData: () => void;
-  exportDailyReport: (dateStr: string) => string;
+  exportDailyReport: (dateStr: string, timezone?: string) => string;
   resetAllData: () => void;
 
   exportBackup: () => BackupFile;
@@ -153,6 +178,8 @@ const initialPersisted: PersistedState = {
   autoBackupSnapshots: [],
   restoreHistory: [],
   checkIns: [],
+  campuses: [],
+  triageUndoRecords: [],
 };
 
 function deriveCurrentUser(state: PersistedState): Nurse | null {
@@ -267,6 +294,98 @@ function validateIsolationCompliance(
   }
   return { success: true };
 }
+
+function _doCheckIn(
+    aptIdx: number,
+    state: AppState,
+    set: StoreSet,
+    get: StoreGet,
+    _campusId?: string,
+  ): { success: boolean; error?: string; data?: CheckIn } {
+    if (aptIdx < 0) return { success: false, error: '预约不存在' };
+    const apt = state.appointments[aptIdx];
+    const patient = state.patients.find((p) => p.id === apt.patientId);
+    if (!patient) return { success: false, error: '患者信息缺失' };
+
+    const existing = state.checkIns.find(
+      (c) => c.appointmentId === apt.id && c.status !== 'triage_rejected',
+    );
+    if (existing) {
+      const opLogId = addOperationLog(set, get, {
+        type: 'patient_checkin',
+        operator: state.currentUser,
+        targetType: 'checkin',
+        targetId: apt.id,
+        targetName: patient.name,
+        detail: `重复签到拦截：患者 ${patient.name} 预约 ${apt.id} 已签到`,
+        isAbnormal: true,
+        abnormalReason: 'duplicate_checkin',
+      });
+      addAbnormalRecord(set, get, {
+        type: 'duplicate_checkin',
+        opLogId,
+        desc: `患者 ${patient.name} 对预约 ${apt.id} 重复签到`,
+        appointmentId: apt.id,
+      });
+      return { success: false, error: '该预约已签到，不可重复签到' };
+    }
+    if (apt.status !== 'pending') {
+      return { success: false, error: '该预约状态不可签到' };
+    }
+    const now = Date.now();
+    let arrivalFlag: CheckIn['arrivalFlag'] = 'on_time';
+    if (now < apt.startTime - 30 * 60 * 1000) {
+      arrivalFlag = 'early';
+      addOperationLog(set, get, {
+        type: 'patient_checkin',
+        operator: state.currentUser,
+        targetType: 'checkin',
+        targetId: apt.id,
+        targetName: patient.name,
+        detail: `患者 ${patient.name} 提前到院签到`,
+        isAbnormal: true,
+        abnormalReason: 'early_arrival',
+      });
+    } else if (now > apt.endTime) {
+      arrivalFlag = 'late';
+      addOperationLog(set, get, {
+        type: 'patient_checkin',
+        operator: state.currentUser,
+        targetType: 'checkin',
+        targetId: apt.id,
+        targetName: patient.name,
+        detail: `患者 ${patient.name} 迟到签到`,
+        isAbnormal: true,
+        abnormalReason: 'late_arrival',
+      });
+    }
+    const id = genId();
+    const checkIn: CheckIn = {
+      id,
+      appointmentId: apt.id,
+      patientId: patient.id,
+      phone: patient.phone,
+      checkInTime: now,
+      status: 'checked_in',
+      arrivalFlag,
+      createdAt: now,
+    };
+    const newAppointments = [...state.appointments];
+    newAppointments[aptIdx] = { ...apt, status: 'checked_in' as const };
+    set({
+      checkIns: [...state.checkIns, checkIn],
+      appointments: newAppointments,
+    });
+    addOperationLog(set, get, {
+      type: 'patient_checkin',
+      operator: state.currentUser,
+      targetType: 'checkin',
+      targetId: id,
+      targetName: patient.name,
+      detail: `患者 ${patient.name} 签到成功（${arrivalFlag === 'early' ? '提前到院' : arrivalFlag === 'late' ? '迟到' : '准时'}）`,
+    });
+    return { success: true, data: checkIn };
+  }
 
 const buildStore = (set: StoreSet, get: StoreGet): AppState => {
   const helpers = {
@@ -441,6 +560,55 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
           { targetId: id, targetName: target.name },
         );
       }
+    },
+
+    addCampus: (c) => {
+      const id = genId();
+      const campus: Campus = { ...c, id, createdAt: Date.now() };
+      set({ campuses: [...get().campuses, campus] });
+      helpers.opLog(
+        'campus_config_change',
+        'campus',
+        `新增院区：${c.name}（时区: ${c.timezone}）`,
+        { targetId: id, targetName: c.name },
+      );
+    },
+    updateCampus: (id, patch) => {
+      const state = get();
+      const target = state.campuses.find((c) => c.id === id);
+      set({
+        campuses: state.campuses.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+      });
+      if (target) {
+        helpers.opLog(
+          'campus_config_change',
+          'campus',
+          `修改院区：${target.name}`,
+          { targetId: id, targetName: patch.name ?? target.name },
+        );
+      }
+    },
+    deleteCampus: (id) => {
+      const state = get();
+      const target = state.campuses.find((c) => c.id === id);
+      set({ campuses: state.campuses.filter((c) => c.id !== id) });
+      if (target) {
+        helpers.opLog(
+          'campus_config_change',
+          'campus',
+          `删除院区：${target.name}`,
+          { targetId: id, targetName: target.name },
+        );
+      }
+    },
+    getActiveCampus: () => {
+      const state = get();
+      if (state.currentUser?.campusId) {
+        const c = state.campuses.find((x) => x.id === state.currentUser!.campusId);
+        if (c && c.active) return c;
+      }
+      const active = state.campuses.find((c) => c.active);
+      return active ?? state.campuses[0] ?? null;
     },
 
     addIsolationRule: (r) => {
@@ -995,200 +1163,149 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       void nurse;
     },
 
-    checkInByPhone: (phone) => {
+    queryTodayAppointments: (queryType, params, campusId) => {
       const state = get();
-      const patient = state.patients.find((p) => p.phone === phone);
-      if (!patient) {
-        return { success: false, error: '未找到该手机号对应的患者' };
-      }
-      const checkedInApt = state.appointments.find(
-        (a) => a.patientId === patient.id && a.status === 'checked_in' && a.appointmentDate === getTodayStr(),
-      );
-      if (checkedInApt) {
-        const existing = state.checkIns.find(
-          (c) => c.appointmentId === checkedInApt.id && c.status !== 'triage_rejected',
-        );
-        if (existing) {
+      const campus = campusId
+        ? state.campuses.find((c) => c.id === campusId)
+        : state.getActiveCampus();
+      const timezone = campus?.timezone;
+      const today = getTodayStr(timezone);
+
+      const matchCampus = (apt: Appointment) => {
+        if (!campus) return true;
+        const bed = state.beds.find((b) => b.id === apt.bedId);
+        return !bed?.campusId || bed.campusId === campus.id;
+      };
+
+      let apts: Appointment[] = [];
+      if (queryType === 'phone' && params.phone) {
+        const patient = state.patients.find((p) => p.phone === params.phone);
+        if (!patient) {
           const opLogId = helpers.opLog(
-            'patient_checkin',
-            'checkin',
-            `重复签到拦截：患者 ${patient.name} 预约 ${checkedInApt.id} 已签到`,
-            {
-              targetId: checkedInApt.id,
-              targetName: patient.name,
-              isAbnormal: true,
-              abnormalReason: 'duplicate_checkin',
-            },
+            'patient_checkin_query',
+            'patient',
+            `查询失败：手机号 ${params.phone} 未找到患者`,
+            { isAbnormal: true, abnormalReason: 'patient_not_found' },
           );
-          helpers.abnRec(
-            'duplicate_checkin',
-            opLogId,
-            `患者 ${patient.name} 对预约 ${checkedInApt.id} 重复签到`,
-            { appointmentId: checkedInApt.id },
-          );
-          return { success: false, error: '该预约已签到，不可重复签到' };
+          helpers.abnRec('patient_not_found', opLogId, `手机号 ${params.phone} 未找到患者`);
+          return { success: false, error: '未找到该手机号对应的患者' };
         }
-      }
-      const apt = state.appointments.find(
-        (a) => a.patientId === patient.id && a.status === 'pending' && a.appointmentDate === getTodayStr(),
-      );
-      if (!apt) {
-        return { success: false, error: '该患者今日无待入床预约' };
-      }
-      const now = Date.now();
-      let arrivalFlag: CheckIn['arrivalFlag'] = 'on_time';
-      if (now < apt.startTime - 30 * 60 * 1000) {
-        arrivalFlag = 'early';
-        helpers.opLog(
-          'patient_checkin',
-          'checkin',
-          `患者 ${patient.name} 提前到院签到`,
-          {
-            targetId: apt.id,
-            targetName: patient.name,
-            isAbnormal: true,
-            abnormalReason: 'early_arrival',
-          },
+        apts = state.appointments.filter(
+          (a) =>
+            a.patientId === patient.id &&
+            (a.status === 'pending' || a.status === 'checked_in' || a.status === 'admitted') &&
+            a.appointmentDate === today &&
+            matchCampus(a),
         );
-      } else if (now > apt.endTime) {
-        arrivalFlag = 'late';
-        helpers.opLog(
-          'patient_checkin',
-          'checkin',
-          `患者 ${patient.name} 迟到签到`,
-          {
-            targetId: apt.id,
-            targetName: patient.name,
-            isAbnormal: true,
-            abnormalReason: 'late_arrival',
-          },
+      } else if (queryType === 'appointmentId' && params.appointmentId) {
+        apts = state.appointments.filter(
+          (a) =>
+            a.id === params.appointmentId &&
+            (a.status === 'pending' || a.status === 'checked_in' || a.status === 'admitted') &&
+            a.appointmentDate === today &&
+            matchCampus(a),
+        );
+      } else if (queryType === 'nameBirthday' && params.name && params.birthday) {
+        const patients = state.patients.filter(
+          (p) =>
+            p.name.trim() === params.name!.trim() &&
+            birthdayMatches(p.birthday, params.birthday),
+        );
+        if (patients.length === 0) {
+          const opLogId = helpers.opLog(
+            'patient_checkin_query',
+            'patient',
+            `查询失败：姓名 ${params.name} 生日 ${params.birthday} 未找到匹配患者`,
+            { isAbnormal: true, abnormalReason: 'patient_not_found' },
+          );
+          helpers.abnRec('patient_not_found', opLogId, `姓名 ${params.name} 生日 ${params.birthday} 未找到匹配患者`);
+          return { success: false, error: '未找到姓名与生日匹配的患者' };
+        }
+        apts = state.appointments.filter(
+          (a) =>
+            patients.some((p) => p.id === a.patientId) &&
+            (a.status === 'pending' || a.status === 'checked_in' || a.status === 'admitted') &&
+            a.appointmentDate === today &&
+            matchCampus(a),
         );
       }
-      const id = genId();
-      const checkIn: CheckIn = {
-        id,
-        appointmentId: apt.id,
-        patientId: patient.id,
-        phone: patient.phone,
-        checkInTime: now,
-        status: 'checked_in',
-        arrivalFlag,
-        createdAt: now,
-      };
-      set({
-        checkIns: [...state.checkIns, checkIn],
-        appointments: state.appointments.map((a) =>
-          a.id === apt.id ? { ...a, status: 'checked_in' as const } : a,
-        ),
-      });
-      helpers.opLog(
-        'patient_checkin',
-        'checkin',
-        `患者 ${patient.name} 签到成功（${arrivalFlag === 'early' ? '提前到院' : arrivalFlag === 'late' ? '迟到' : '准时'}）`,
-        { targetId: id, targetName: patient.name },
-      );
-      return { success: true, data: checkIn };
-    },
 
-    checkInByAppointment: (appointmentId) => {
-      const state = get();
-      const apt = state.appointments.find((a) => a.id === appointmentId);
-      if (!apt) {
-        return { success: false, error: '预约不存在' };
-      }
-      const patient = state.patients.find((p) => p.id === apt.patientId);
-      if (!patient) {
-        return { success: false, error: '患者信息缺失' };
-      }
-      const existing = state.checkIns.find(
-        (c) => c.appointmentId === apt.id && c.status !== 'triage_rejected',
-      );
-      if (existing) {
+      if (apts.length === 0) {
         const opLogId = helpers.opLog(
-          'patient_checkin',
-          'checkin',
-          `重复签到拦截：患者 ${patient.name} 预约 ${apt.id} 已签到`,
-          {
-            targetId: apt.id,
-            targetName: patient.name,
-            isAbnormal: true,
-            abnormalReason: 'duplicate_checkin',
-          },
+          'patient_checkin_query',
+          'appointment',
+          `查询失败：该条件下院区今日无预约`,
+          { isAbnormal: true, abnormalReason: 'no_appointment_today' },
         );
-        helpers.abnRec(
-          'duplicate_checkin',
-          opLogId,
-          `患者 ${patient.name} 对预约 ${apt.id} 重复签到`,
-          { appointmentId: apt.id },
-        );
-        return { success: false, error: '该预约已签到，不可重复签到' };
+        helpers.abnRec('no_appointment_today', opLogId, `院区今日无符合条件的预约`);
+        return { success: false, error: '院区今日无符合条件的预约' };
       }
-      if (apt.status !== 'pending') {
-        return { success: false, error: '该预约状态不可签到' };
-      }
-      const now = Date.now();
-      let arrivalFlag: CheckIn['arrivalFlag'] = 'on_time';
-      if (now < apt.startTime - 30 * 60 * 1000) {
-        arrivalFlag = 'early';
-        helpers.opLog(
-          'patient_checkin',
-          'checkin',
-          `患者 ${patient.name} 提前到院签到`,
-          {
-            targetId: apt.id,
-            targetName: patient.name,
-            isAbnormal: true,
-            abnormalReason: 'early_arrival',
-          },
-        );
-      } else if (now > apt.endTime) {
-        arrivalFlag = 'late';
-        helpers.opLog(
-          'patient_checkin',
-          'checkin',
-          `患者 ${patient.name} 迟到签到`,
-          {
-            targetId: apt.id,
-            targetName: patient.name,
-            isAbnormal: true,
-            abnormalReason: 'late_arrival',
-          },
-        );
-      }
-      const id = genId();
-      const checkIn: CheckIn = {
-        id,
-        appointmentId: apt.id,
-        patientId: patient.id,
-        phone: patient.phone,
-        checkInTime: now,
-        status: 'checked_in',
-        arrivalFlag,
-        createdAt: now,
-      };
-      set({
-        checkIns: [...state.checkIns, checkIn],
-        appointments: state.appointments.map((a) =>
-          a.id === apt.id ? { ...a, status: 'checked_in' as const } : a,
-        ),
-      });
+
       helpers.opLog(
-        'patient_checkin',
-        'checkin',
-        `患者 ${patient.name} 签到成功（${arrivalFlag === 'early' ? '提前到院' : arrivalFlag === 'late' ? '迟到' : '准时'}）`,
-        { targetId: id, targetName: patient.name },
+        'patient_checkin_query',
+        'appointment',
+        `查询成功：找到 ${apts.length} 条院区当日预约`,
       );
-      return { success: true, data: checkIn };
+
+      const data: AppointmentQueryResult[] = apts.map((apt) => ({
+        appointment: apt,
+        patient: state.patients.find((p) => p.id === apt.patientId)!,
+        bed: state.beds.find((b) => b.id === apt.bedId),
+        slot: state.timeSlots.find((s) => s.id === apt.slotId),
+        isolationRule: apt.isolationRuleId
+          ? state.isolationRules.find((r) => r.id === apt.isolationRuleId)
+          : undefined,
+      }));
+
+      return { success: true, data };
     },
 
-    getTriageQueue: () => {
+    checkInByPhone: (phone, campusId) => {
       const state = get();
-      return state.checkIns.filter(
-        (c) => c.status === 'checked_in' || c.status === 'triaging',
-      );
+      const query = state.queryTodayAppointments('phone', { phone }, campusId);
+      if (!query.success || !query.data) {
+        return { success: false, error: query.error ?? '查询失败' };
+      }
+      const pending = query.data.find((q) => q.appointment.status === 'pending');
+      const result = pending ?? query.data[0];
+      return _doCheckIn(state.appointments.findIndex(a => a.id === result.appointment.id), state, set, get, campusId);
     },
 
-    confirmTriage: (checkInId, nurseId, overrideBedId) => {
+    checkInByAppointment: (appointmentId, campusId) => {
+      const state = get();
+      const query = state.queryTodayAppointments('appointmentId', { appointmentId }, campusId);
+      if (!query.success || !query.data) {
+        return { success: false, error: query.error ?? '查询失败' };
+      }
+      const pending = query.data.find((q) => q.appointment.status === 'pending');
+      const result = pending ?? query.data[0];
+      return _doCheckIn(state.appointments.findIndex(a => a.id === result.appointment.id), state, set, get, campusId);
+    },
+
+    checkInByNameBirthday: (name, birthday, campusId) => {
+      const state = get();
+      const query = state.queryTodayAppointments('nameBirthday', { name, birthday }, campusId);
+      if (!query.success || !query.data) {
+        return { success: false, error: query.error ?? '查询失败' };
+      }
+      const pending = query.data.find((q) => q.appointment.status === 'pending');
+      const result = pending ?? query.data[0];
+      return _doCheckIn(state.appointments.findIndex(a => a.id === result.appointment.id), state, set, get, campusId);
+    },
+
+    getTriageQueue: (campusId) => {
+      const state = get();
+      return state.checkIns.filter((c) => {
+        if (c.status !== 'checked_in' && c.status !== 'triaging') return false;
+        if (!campusId) return true;
+        const apt = state.appointments.find((a) => a.id === c.appointmentId);
+        if (!apt) return false;
+        const bed = state.beds.find((b) => b.id === apt.bedId);
+        return !bed?.campusId || bed.campusId === campusId;
+      });
+    },
+
+    confirmTriage: (checkInId, nurseId, overrideBedId, department) => {
       const state = get();
       const nurse = state.nurses.find((n) => n.id === nurseId);
       if (!nurse) return { success: false, error: '护士不存在' };
@@ -1278,7 +1395,13 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       set({
         checkIns: state.checkIns.map((c) =>
           c.id === checkInId
-            ? { ...c, status: 'triage_confirmed' as CheckInStatus, handledBy: nurseId, suggestedBedId: targetBedId }
+            ? {
+                ...c,
+                status: 'triage_confirmed' as CheckInStatus,
+                handledBy: nurseId,
+                suggestedBedId: targetBedId,
+                assignedDepartment: department ?? c.assignedDepartment,
+              }
             : c,
         ),
         appointments: state.appointments.map((a) =>
@@ -1306,7 +1429,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       helpers.opLog(
         'triage_confirm',
         'checkin',
-        `分诊确认入床：${patient?.name ?? ''} → ${bed?.bedNumber ?? ''}`,
+        `分诊确认入床：${patient?.name ?? ''} → ${bed?.bedNumber ?? ''}${department ? `（${department}）` : ''}`,
         { targetId: checkInId, targetName: `${bed?.bedNumber ?? ''} ${patient?.name ?? ''}` },
       );
       return { success: true };
@@ -1343,6 +1466,336 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         { targetId: checkInId, targetName: patient?.name ?? '' },
       );
       return { success: true };
+    },
+
+    reassignTriage: (checkInId, nurseId, newBedId, department) => {
+      const state = get();
+      const nurse = state.nurses.find((n) => n.id === nurseId);
+      if (!nurse) return { success: false, error: '护士不存在' };
+      if (nurse.role === 'normal') {
+        const opLogId = helpers.opLog(
+          'triage_reassign',
+          'checkin',
+          '普通护士无权改派分诊床位',
+          {
+            targetId: checkInId,
+            isAbnormal: true,
+            abnormalReason: 'triage_reassign_permission_denied',
+          },
+        );
+        helpers.abnRec(
+          'triage_reassign_permission_denied',
+          opLogId,
+          '普通护士尝试改派分诊床位',
+        );
+        return { success: false, error: '普通护士无权改派分诊床位，请联系高级护士或管理员' };
+      }
+
+      const checkIn = state.checkIns.find((c) => c.id === checkInId);
+      if (!checkIn) return { success: false, error: '签到记录不存在' };
+      if (checkIn.status !== 'checked_in' && checkIn.status !== 'triaging') {
+        return { success: false, error: '该签到记录状态不可分诊改派' };
+      }
+
+      const apt = state.appointments.find((a) => a.id === checkIn.appointmentId);
+      if (!apt) return { success: false, error: '关联预约不存在' };
+
+      const newBed = state.beds.find((b) => b.id === newBedId);
+      if (!newBed) return { success: false, error: '目标床位不存在' };
+      if (newBed.status === 'occupied' || newBed.status === 'isolated') {
+        const opLogId = helpers.opLog(
+          'triage_reassign',
+          'checkin',
+          `改派失败：目标床位 ${newBed.bedNumber} 已被占用`,
+          { targetId: checkInId, isAbnormal: true, abnormalReason: 'bed_occupied_triage' },
+        );
+        helpers.abnRec('bed_occupied_triage', opLogId, `改派目标床位 ${newBed.bedNumber} 已被占用`, {
+          bedId: newBedId,
+          appointmentId: apt.id,
+        });
+        return { success: false, error: `床位 ${newBed.bedNumber} 已被占用` };
+      }
+
+      const conflictingAdmission = state.admissions.find(
+        (a) => a.bedId === newBedId && a.status === 'in_bed',
+      );
+      if (conflictingAdmission) {
+        const opLogId = helpers.opLog(
+          'triage_reassign',
+          'checkin',
+          '改派失败：目标床位存在未完成在床记录',
+          { targetId: checkInId, isAbnormal: true, abnormalReason: 'bed_occupied_triage' },
+        );
+        helpers.abnRec('bed_occupied_triage', opLogId, '改派目标床位存在未完成在床记录', { bedId: newBedId });
+        return { success: false, error: '目标床位存在未完成的在床记录' };
+      }
+
+      const isoCheck = validateIsolationCompliance(state, newBedId, apt.isolationRuleId);
+      if (!isoCheck.success) {
+        const opLogId = helpers.opLog(
+          'triage_reassign',
+          'checkin',
+          `改派失败：${isoCheck.error}`,
+          { targetId: checkInId, isAbnormal: true, abnormalReason: 'isolation_conflict_triage' },
+        );
+        helpers.abnRec('isolation_conflict_triage', opLogId, isoCheck.error ?? '隔离规则冲突', {
+          bedId: newBedId,
+          appointmentId: apt.id,
+        });
+        return { success: false, error: isoCheck.error };
+      }
+
+      if (apt.isolationRuleId) {
+        const rule = state.isolationRules.find((r) => r.id === apt.isolationRuleId);
+        const oldBed = state.beds.find((b) => b.id === apt.bedId);
+        if (rule?.crossZoneForbidden && oldBed && newBed.zone !== oldBed.zone) {
+          const opLogId = helpers.opLog(
+            'triage_reassign',
+            'checkin',
+            `改派失败：${rule.disease} 禁止跨区调度`,
+            { targetId: checkInId, isAbnormal: true, abnormalReason: 'isolation_conflict_triage' },
+          );
+          helpers.abnRec('isolation_conflict_triage', opLogId, `${rule.disease} 禁止跨区调度`, {
+            bedId: newBedId,
+            appointmentId: apt.id,
+          });
+          return { success: false, error: `${rule.disease} 禁止跨区调度` };
+        }
+      }
+
+      const patient = state.patients.find((p) => p.id === apt.patientId);
+
+      set({
+        checkIns: state.checkIns.map((c) =>
+          c.id === checkInId
+            ? { ...c, suggestedBedId: newBedId, assignedDepartment: department ?? c.assignedDepartment }
+            : c,
+        ),
+        appointments: state.appointments.map((a) =>
+          a.id === apt.id ? { ...a, bedId: newBedId } : a,
+        ),
+      });
+      helpers.opLog(
+        'triage_reassign',
+        'checkin',
+        `分诊改派：${patient?.name ?? ''} 床位调整为 ${newBed.bedNumber}${department ? `（${department}）` : ''}`,
+        { targetId: checkInId, targetName: patient?.name ?? '' },
+      );
+      return { success: true };
+    },
+
+    undoTriage: (checkInId, nurseId, reason) => {
+      const state = get();
+      const nurse = state.nurses.find((n) => n.id === nurseId);
+      if (!nurse) return { success: false, error: '护士不存在' };
+      if (nurse.role === 'normal') {
+        const opLogId = helpers.opLog(
+          'triage_undo',
+          'checkin',
+          '普通护士无权撤销分诊确认',
+          {
+            targetId: checkInId,
+            isAbnormal: true,
+            abnormalReason: 'triage_undo_permission_denied',
+          },
+        );
+        helpers.abnRec('triage_undo_permission_denied', opLogId, '普通护士尝试撤销分诊确认');
+        return { success: false, error: '普通护士无权撤销分诊，请联系高级护士或管理员' };
+      }
+
+      const checkIn = state.checkIns.find((c) => c.id === checkInId);
+      if (!checkIn) return { success: false, error: '签到记录不存在' };
+      if (checkIn.status !== 'triage_confirmed') {
+        return { success: false, error: '只有已入床的分诊可以撤销' };
+      }
+
+      const apt = state.appointments.find((a) => a.id === checkIn.appointmentId);
+      if (!apt) return { success: false, error: '关联预约不存在' };
+
+      const admission = state.admissions.find(
+        (a) => a.appointmentId === apt.id && a.status === 'in_bed',
+      );
+      if (!admission) {
+        return { success: false, error: '未找到关联的在床记录' };
+      }
+
+      const patient = state.patients.find((p) => p.id === apt.patientId);
+      const undoId = genId();
+      const targetBedId = checkIn.suggestedBedId ?? apt.bedId;
+
+      const undoRecord: TriageUndoRecord = {
+        id: undoId,
+        checkInId,
+        previousStatus: checkIn.status,
+        previousBedId: targetBedId,
+        previousAdmissionId: admission.id,
+        undoneBy: nurseId,
+        undoneAt: Date.now(),
+        reason,
+        restored: false,
+      };
+
+      set({
+        triageUndoRecords: [undoRecord, ...state.triageUndoRecords],
+        checkIns: state.checkIns.map((c) =>
+          c.id === checkInId
+            ? { ...c, status: 'triage_undone' as CheckInStatus, undoId }
+            : c,
+        ),
+        appointments: state.appointments.map((a) =>
+          a.id === apt.id ? { ...a, status: 'checked_in' as const } : a,
+        ),
+        admissions: state.admissions.map((a) =>
+          a.id === admission.id
+            ? {
+                ...a,
+                status: 'discharged',
+                dischargedAt: Date.now(),
+                dischargedBy: nurseId,
+                dischargeReason: `分诊撤销：${reason}`,
+              }
+            : a,
+        ),
+        beds: state.beds.map((b) =>
+          b.id === targetBedId
+            ? {
+                ...b,
+                status: 'cleaning' as BedStatus,
+                currentPatientId: undefined,
+                currentAdmissionId: undefined,
+              }
+            : b,
+        ),
+      });
+      helpers.opLog(
+        'triage_undo',
+        'triage_undo',
+        `撤销分诊：${patient?.name ?? ''}，原因：${reason}`,
+        { targetId: undoId, targetName: patient?.name ?? '' },
+      );
+      return { success: true };
+    },
+
+    restoreTriage: (undoId, nurseId) => {
+      const state = get();
+      const nurse = state.nurses.find((n) => n.id === nurseId);
+      if (!nurse) return { success: false, error: '护士不存在' };
+      if (nurse.role === 'normal') {
+        const opLogId = helpers.opLog(
+          'triage_restore',
+          'triage_undo',
+          '普通护士无权恢复撤销的分诊',
+          {
+            targetId: undoId,
+            isAbnormal: true,
+            abnormalReason: 'triage_undo_permission_denied',
+          },
+        );
+        helpers.abnRec(
+          'triage_undo_permission_denied',
+          opLogId,
+          '普通护士尝试恢复撤销的分诊',
+        );
+        return { success: false, error: '普通护士无权恢复分诊，请联系高级护士或管理员' };
+      }
+
+      const undo = state.triageUndoRecords.find((r) => r.id === undoId);
+      if (!undo) return { success: false, error: '撤销记录不存在' };
+      if (undo.restored) return { success: false, error: '该撤销记录已恢复' };
+
+      const checkIn = state.checkIns.find((c) => c.id === undo.checkInId);
+      if (!checkIn) return { success: false, error: '签到记录不存在' };
+      const apt = state.appointments.find((a) => a.id === checkIn.appointmentId);
+      if (!apt) return { success: false, error: '关联预约不存在' };
+      if (!undo.previousBedId) return { success: false, error: '缺少原床位信息' };
+
+      const bed = state.beds.find((b) => b.id === undo.previousBedId);
+      if (!bed) return { success: false, error: '原床位不存在' };
+      if (bed.status !== 'idle' && bed.status !== 'cleaning') {
+        const opLogId = helpers.opLog(
+          'triage_restore',
+          'triage_undo',
+          `恢复失败：床位 ${bed.bedNumber} 已被占用`,
+          { targetId: undoId, isAbnormal: true, abnormalReason: 'bed_occupied_triage' },
+        );
+        helpers.abnRec('bed_occupied_triage', opLogId, `恢复时床位 ${bed.bedNumber} 已被占用`, {
+          bedId: undo.previousBedId,
+        });
+        return { success: false, error: `原床位 ${bed.bedNumber} 已被占用，无法恢复` };
+      }
+
+      const isoCheck = validateIsolationCompliance(state, undo.previousBedId, apt.isolationRuleId);
+      if (!isoCheck.success) {
+        const opLogId = helpers.opLog(
+          'triage_restore',
+          'triage_undo',
+          `恢复失败：${isoCheck.error}`,
+          { targetId: undoId, isAbnormal: true, abnormalReason: 'isolation_conflict_triage' },
+        );
+        helpers.abnRec(
+          'isolation_conflict_triage',
+          opLogId,
+          isoCheck.error ?? '隔离规则冲突',
+          { bedId: undo.previousBedId, appointmentId: apt.id },
+        );
+        return { success: false, error: isoCheck.error };
+      }
+
+      const patient = state.patients.find((p) => p.id === apt.patientId);
+      const admissionId = genId();
+      const newBedStatus: BedStatus = apt.isolationRuleId ? 'isolated' : 'occupied';
+
+      set({
+        triageUndoRecords: state.triageUndoRecords.map((r) =>
+          r.id === undoId
+            ? { ...r, restored: true, restoredBy: nurseId, restoredAt: Date.now() }
+            : r,
+        ),
+        checkIns: state.checkIns.map((c) =>
+          c.id === undo.checkInId
+            ? { ...c, status: 'triage_confirmed' as CheckInStatus, handledBy: nurseId, undoId: undefined }
+            : c,
+        ),
+        appointments: state.appointments.map((a) =>
+          a.id === apt.id ? { ...a, status: 'admitted' as const } : a,
+        ),
+        admissions: [
+          ...state.admissions,
+          {
+            id: admissionId,
+            appointmentId: apt.id,
+            patientId: apt.patientId,
+            bedId: undo.previousBedId,
+            admittedAt: Date.now(),
+            status: 'in_bed',
+            admittedBy: nurseId,
+            createdAt: Date.now(),
+          },
+        ],
+        beds: state.beds.map((b) =>
+          b.id === undo.previousBedId
+            ? {
+                ...b,
+                status: newBedStatus,
+                currentPatientId: apt.patientId,
+                currentAdmissionId: admissionId,
+              }
+            : b,
+        ),
+      });
+      helpers.opLog(
+        'triage_restore',
+        'triage_undo',
+        `恢复分诊：${patient?.name ?? ''} → ${bed.bedNumber}`,
+        { targetId: undoId, targetName: patient?.name ?? '' },
+      );
+      return { success: true };
+    },
+
+    getUndoRecords: (checkInId) => {
+      const state = get();
+      if (checkInId) return state.triageUndoRecords.filter((r) => r.checkInId === checkInId);
+      return state.triageUndoRecords;
     },
 
     modifyTriage: (checkInId, nurseId, patch) => {
@@ -1399,6 +1852,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         isAbnormal: false,
       };
       set({
+        campuses: [...(sampleData as any).campuses ?? []],
         beds: [...sampleData.beds],
         nurses: [...sampleData.nurses],
         isolationRules: [...sampleData.isolationRules],
@@ -1410,15 +1864,16 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         operationLogs: [importLog, ...sampleData.operationLogs],
         abnormalRecords: [...sampleData.abnormalRecords],
         checkIns: [...sampleData.checkIns],
+        triageUndoRecords: [...(sampleData as any).triageUndoRecords ?? []],
         currentUserId: null,
         currentUser: null,
         currentNurse: null,
       });
     },
 
-    exportDailyReport: (dateStr) => {
+    exportDailyReport: (dateStr, timezone) => {
       const state = get();
-      const dayStart = parseLocalTime(dateStr, '00:00');
+      const dayStart = parseLocalTime(dateStr, '00:00', timezone);
       const dayEnd = dayStart + 24 * 60 * 60 * 1000;
 
       const rows: string[][] = [];
@@ -1517,6 +1972,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
     exportBackup: (): BackupFile => {
       const state = get();
       const backupData: BackupData = {
+        campuses: JSON.parse(JSON.stringify(state.campuses)),
         beds: JSON.parse(JSON.stringify(state.beds)),
         nurses: JSON.parse(JSON.stringify(state.nurses)),
         isolationRules: JSON.parse(JSON.stringify(state.isolationRules)),
@@ -1528,6 +1984,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         operationLogs: JSON.parse(JSON.stringify(state.operationLogs)),
         abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
         checkIns: JSON.parse(JSON.stringify(state.checkIns)),
+        triageUndoRecords: JSON.parse(JSON.stringify(state.triageUndoRecords)),
       };
       const backupFile: BackupFile = {
         version: 'v1',
@@ -1644,6 +2101,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       }
 
       const dataOverview: Record<BackupRestoreEntity, number> = {
+        campuses: data?.campuses?.length ?? 0,
         beds: data?.beds?.length ?? 0,
         nurses: data?.nurses?.length ?? 0,
         isolationRules: data?.isolationRules?.length ?? 0,
@@ -1655,12 +2113,13 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         operationLogs: data?.operationLogs?.length ?? 0,
         abnormalRecords: data?.abnormalRecords?.length ?? 0,
         checkIns: data?.checkIns?.length ?? 0,
+        triageUndoRecords: data?.triageUndoRecords?.length ?? 0,
       };
 
       const entityKeys: BackupRestoreEntity[] = [
-        'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
+        'campuses', 'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
         'appointments', 'admissions', 'careNotes', 'operationLogs', 'abnormalRecords',
-        'checkIns',
+        'checkIns', 'triageUndoRecords',
       ];
 
       const diff: RestoreDiff = {} as RestoreDiff;
@@ -1713,6 +2172,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const currentUser = state.currentUser;
 
       const beforeData: BackupData = {
+        campuses: JSON.parse(JSON.stringify(state.campuses)),
         beds: JSON.parse(JSON.stringify(state.beds)),
         nurses: JSON.parse(JSON.stringify(state.nurses)),
         isolationRules: JSON.parse(JSON.stringify(state.isolationRules)),
@@ -1724,14 +2184,16 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         operationLogs: JSON.parse(JSON.stringify(state.operationLogs)),
         abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
         checkIns: JSON.parse(JSON.stringify(state.checkIns)),
+        triageUndoRecords: JSON.parse(JSON.stringify(state.triageUndoRecords)),
       };
 
       const emptyOverview: Record<BackupRestoreEntity, number> = {
-        beds: 0, nurses: 0, isolationRules: 0, timeSlots: 0, patients: 0,
+        campuses: 0, beds: 0, nurses: 0, isolationRules: 0, timeSlots: 0, patients: 0,
         appointments: 0, admissions: 0, careNotes: 0, operationLogs: 0, abnormalRecords: 0,
-        checkIns: 0,
+        checkIns: 0, triageUndoRecords: 0,
       };
       const emptyDiff: RestoreDiff = {
+        campuses: { added: 0, updated: 0, deleted: 0 },
         beds: { added: 0, updated: 0, deleted: 0 },
         nurses: { added: 0, updated: 0, deleted: 0 },
         isolationRules: { added: 0, updated: 0, deleted: 0 },
@@ -1743,6 +2205,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         operationLogs: { added: 0, updated: 0, deleted: 0 },
         abnormalRecords: { added: 0, updated: 0, deleted: 0 },
         checkIns: { added: 0, updated: 0, deleted: 0 },
+        triageUndoRecords: { added: 0, updated: 0, deleted: 0 },
       };
       const emptyDetailedDiff = state.calculateDetailedDiff(beforeData, beforeData);
 
@@ -1818,6 +2281,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       );
 
       set({
+        campuses: JSON.parse(JSON.stringify(afterData.campuses ?? [])),
         beds: JSON.parse(JSON.stringify(afterData.beds ?? [])),
         nurses: newNurses,
         isolationRules: JSON.parse(JSON.stringify(afterData.isolationRules ?? [])),
@@ -1828,6 +2292,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         careNotes: JSON.parse(JSON.stringify(afterData.careNotes ?? [])),
         abnormalRecords: JSON.parse(JSON.stringify(afterData.abnormalRecords ?? [])),
         checkIns: JSON.parse(JSON.stringify(afterData.checkIns ?? [])),
+        triageUndoRecords: JSON.parse(JSON.stringify(afterData.triageUndoRecords ?? [])),
         currentUserId: adminStillExists ? currentUser.id : null,
         currentUser: adminStillExists ? adminStillExists : null,
         currentNurse: adminStillExists ? adminStillExists : null,
@@ -1880,6 +2345,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const currentUser = state.currentUser;
 
       const beforeData: BackupData = {
+        campuses: JSON.parse(JSON.stringify(state.campuses)),
         beds: JSON.parse(JSON.stringify(state.beds)),
         nurses: JSON.parse(JSON.stringify(state.nurses)),
         isolationRules: JSON.parse(JSON.stringify(state.isolationRules)),
@@ -1891,14 +2357,16 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         operationLogs: JSON.parse(JSON.stringify(state.operationLogs)),
         abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
         checkIns: JSON.parse(JSON.stringify(state.checkIns)),
+        triageUndoRecords: JSON.parse(JSON.stringify(state.triageUndoRecords)),
       };
 
       const emptyOverview: Record<BackupRestoreEntity, number> = {
-        beds: 0, nurses: 0, isolationRules: 0, timeSlots: 0, patients: 0,
+        campuses: 0, beds: 0, nurses: 0, isolationRules: 0, timeSlots: 0, patients: 0,
         appointments: 0, admissions: 0, careNotes: 0, operationLogs: 0, abnormalRecords: 0,
-        checkIns: 0,
+        checkIns: 0, triageUndoRecords: 0,
       };
       const emptyDiff: RestoreDiff = {
+        campuses: { added: 0, updated: 0, deleted: 0 },
         beds: { added: 0, updated: 0, deleted: 0 },
         nurses: { added: 0, updated: 0, deleted: 0 },
         isolationRules: { added: 0, updated: 0, deleted: 0 },
@@ -1910,6 +2378,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         operationLogs: { added: 0, updated: 0, deleted: 0 },
         abnormalRecords: { added: 0, updated: 0, deleted: 0 },
         checkIns: { added: 0, updated: 0, deleted: 0 },
+        triageUndoRecords: { added: 0, updated: 0, deleted: 0 },
       };
       const emptyDetailedDiff = state.calculateDetailedDiff(beforeData, beforeData);
 
@@ -1978,6 +2447,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       );
 
       set({
+        campuses: JSON.parse(JSON.stringify(afterData.campuses ?? [])),
         beds: JSON.parse(JSON.stringify(afterData.beds ?? [])),
         nurses: newNurses,
         isolationRules: JSON.parse(JSON.stringify(afterData.isolationRules ?? [])),
@@ -1988,6 +2458,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         careNotes: JSON.parse(JSON.stringify(afterData.careNotes ?? [])),
         abnormalRecords: JSON.parse(JSON.stringify(afterData.abnormalRecords ?? [])),
         checkIns: JSON.parse(JSON.stringify(afterData.checkIns ?? [])),
+        triageUndoRecords: JSON.parse(JSON.stringify(afterData.triageUndoRecords ?? [])),
         currentUserId: adminStillExists ? currentUser.id : null,
         currentUser: adminStillExists ? adminStillExists : null,
         currentNurse: adminStillExists ? adminStillExists : null,
@@ -1996,8 +2467,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const detailedDiff = state.calculateDetailedDiff(beforeData, afterData);
 
       const entityKeys: BackupRestoreEntity[] = [
-        'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
+        'campuses', 'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
         'appointments', 'admissions', 'careNotes', 'operationLogs', 'abnormalRecords',
+        'checkIns', 'triageUndoRecords',
       ];
       const dataOverview: Record<BackupRestoreEntity, number> = {} as Record<BackupRestoreEntity, number>;
       for (const key of entityKeys) {
@@ -2057,6 +2529,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         createdAt: Date.now(),
         name: `${reason} - ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
         data: {
+          campuses: JSON.parse(JSON.stringify(state.campuses)),
           beds: JSON.parse(JSON.stringify(state.beds)),
           nurses: JSON.parse(JSON.stringify(state.nurses)),
           isolationRules: JSON.parse(JSON.stringify(state.isolationRules)),
@@ -2068,6 +2541,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
           operationLogs: JSON.parse(JSON.stringify(state.operationLogs)),
           abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
           checkIns: JSON.parse(JSON.stringify(state.checkIns)),
+          triageUndoRecords: JSON.parse(JSON.stringify(state.triageUndoRecords)),
         },
       };
 
@@ -2113,12 +2587,13 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
 
     calculateDetailedDiff: (beforeData: BackupData, afterData: BackupData): RestoreDetailedDiff => {
       const entityKeys: BackupRestoreEntity[] = [
-        'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
+        'campuses', 'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
         'appointments', 'admissions', 'careNotes', 'operationLogs', 'abnormalRecords',
-        'checkIns',
+        'checkIns', 'triageUndoRecords',
       ];
 
       const entityNameFields: Record<BackupRestoreEntity, string> = {
+        campuses: 'name',
         beds: 'bedNumber',
         nurses: 'name',
         isolationRules: 'disease',
@@ -2130,6 +2605,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         operationLogs: 'id',
         abnormalRecords: 'id',
         checkIns: 'id',
+        triageUndoRecords: 'id',
       };
 
       const result: RestoreDetailedDiff = {} as RestoreDetailedDiff;
@@ -2218,6 +2694,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
 };
 
 const persistedKeys: (keyof PersistedState)[] = [
+  'campuses',
   'beds',
   'nurses',
   'isolationRules',
@@ -2232,6 +2709,7 @@ const persistedKeys: (keyof PersistedState)[] = [
   'restoreHistory',
   'currentUserId',
   'checkIns',
+  'triageUndoRecords',
 ];
 
 function deriveFromPartial(state: Partial<AppState>): Nurse | null {

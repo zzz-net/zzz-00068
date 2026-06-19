@@ -3,7 +3,7 @@ import { useAppStore } from '@/store';
 import { useToastStore } from '@/store/toast';
 import { RoleGate } from '@/components/RoleGate';
 import { ConfirmModal } from '@/components/ConfirmModal';
-import type { CheckIn, CheckInStatus, NurseRole } from '@/types';
+import type { CheckIn, CheckInStatus, NurseRole, AppointmentQueryType } from '@/types';
 import {
   UserCheck,
   ClipboardCheck,
@@ -19,14 +19,24 @@ import {
   Clock,
   Edit3,
   ChevronDown,
+  Hash,
+  User,
+  CalendarDays,
+  Undo2,
+  Repeat,
+  RotateCcw,
+  ArrowRightLeft,
+  Building2,
+  Stethoscope,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, getTodayStr, formatTime, formatDate } from '@/lib/utils';
 
 const checkInStatusLabel: Record<CheckInStatus, string> = {
   checked_in: '已签到',
   triaging: '分诊中',
   triage_confirmed: '已入床',
   triage_rejected: '已退回',
+  triage_undone: '已撤销',
 };
 
 const checkInStatusColor: Record<CheckInStatus, string> = {
@@ -34,6 +44,7 @@ const checkInStatusColor: Record<CheckInStatus, string> = {
   triaging: 'bg-amber-100 text-amber-700',
   triage_confirmed: 'bg-emerald-100 text-emerald-700',
   triage_rejected: 'bg-rose-100 text-rose-600',
+  triage_undone: 'bg-purple-100 text-purple-700',
 };
 
 const arrivalFlagLabel: Record<string, string> = {
@@ -48,6 +59,8 @@ const arrivalFlagColor: Record<string, string> = {
   late: 'bg-rose-50 text-rose-600',
 };
 
+type CheckInTab = 'phone' | 'appointment' | 'nameBirthday';
+
 export default function TriageQueue() {
   const {
     checkIns,
@@ -58,15 +71,34 @@ export default function TriageQueue() {
     isolationRules,
     nurses,
     currentUser,
+    campuses,
+    getActiveCampus,
+    queryTodayAppointments,
     checkInByPhone,
     checkInByAppointment,
+    checkInByNameBirthday,
     confirmTriage,
     rejectTriage,
     modifyTriage,
+    reassignTriage,
+    undoTriage,
+    restoreTriage,
+    getUndoRecords,
   } = useAppStore();
   const { showToast } = useToastStore();
 
+  const activeCampus = getActiveCampus();
+  const campusTimezone = activeCampus?.timezone ?? 'Asia/Shanghai';
+  const todayStr = getTodayStr(campusTimezone);
+
+  const [checkInTab, setCheckInTab] = useState<CheckInTab>('phone');
   const [phoneInput, setPhoneInput] = useState('');
+  const [appointmentIdInput, setAppointmentIdInput] = useState('');
+  const [nameInput, setNameInput] = useState('');
+  const [birthdayInput, setBirthdayInput] = useState('');
+  const [queryResults, setQueryResults] = useState<any[]>([]);
+  const [queryError, setQueryError] = useState('');
+
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | CheckInStatus>('all');
 
@@ -76,6 +108,14 @@ export default function TriageQueue() {
   const [modifyTarget, setModifyTarget] = useState<CheckIn | null>(null);
   const [modifyNote, setModifyNote] = useState('');
   const [overrideBedId, setOverrideBedId] = useState<string>('');
+  const [confirmDepartment, setConfirmDepartment] = useState('');
+
+  const [reassignTarget, setReassignTarget] = useState<CheckIn | null>(null);
+  const [reassignBedId, setReassignBedId] = useState<string>('');
+  const [reassignDepartment, setReassignDepartment] = useState('');
+
+  const [undoTarget, setUndoTarget] = useState<CheckIn | null>(null);
+  const [undoReason, setUndoReason] = useState('');
 
   const triageQueue = useMemo(() => {
     return checkIns
@@ -101,24 +141,94 @@ export default function TriageQueue() {
     [checkIns],
   );
 
+  const handleQueryByNameBirthday = () => {
+    setQueryError('');
+    setQueryResults([]);
+    if (!nameInput.trim() || !birthdayInput.trim()) {
+      showToast('请输入姓名和生日', 'error');
+      return;
+    }
+    const res = queryTodayAppointments(
+      'nameBirthday' as AppointmentQueryType,
+      { name: nameInput.trim(), birthday: birthdayInput.trim() },
+      activeCampus?.id,
+    );
+    if (!res.success) {
+      setQueryError(res.error ?? '未找到匹配预约');
+      showToast(res.error ?? '未找到匹配预约', 'error');
+      return;
+    }
+    if (!res.data || res.data.length === 0) {
+      setQueryError('今日无匹配预约');
+      showToast('今日无匹配预约', 'error');
+      return;
+    }
+    setQueryResults(res.data);
+    showToast(`找到 ${res.data.length} 条今日预约`, 'success');
+  };
+
+  const handleQueryByAppointment = () => {
+    setQueryError('');
+    setQueryResults([]);
+    if (!appointmentIdInput.trim()) {
+      showToast('请输入预约号', 'error');
+      return;
+    }
+    const res = queryTodayAppointments(
+      'appointmentId' as AppointmentQueryType,
+      { appointmentId: appointmentIdInput.trim() },
+      activeCampus?.id,
+    );
+    if (!res.success) {
+      setQueryError(res.error ?? '未找到匹配预约');
+      showToast(res.error ?? '未找到匹配预约', 'error');
+      return;
+    }
+    if (!res.data || res.data.length === 0) {
+      setQueryError('今日无匹配预约');
+      showToast('今日无匹配预约', 'error');
+      return;
+    }
+    setQueryResults(res.data);
+    showToast(`找到 ${res.data.length} 条今日预约`, 'success');
+  };
+
   const handleCheckInByPhone = () => {
     if (!phoneInput.trim()) {
       showToast('请输入手机号', 'error');
       return;
     }
-    const res = checkInByPhone(phoneInput.trim());
+    const res = checkInByPhone(phoneInput.trim(), activeCampus?.id);
     if (res.success) {
       showToast('签到成功，已加入待分诊队列', 'success');
       setPhoneInput('');
+      setQueryError('');
     } else {
       showToast(res.error ?? '签到失败', 'error');
     }
   };
 
   const handleCheckInByAppointment = (appointmentId: string) => {
-    const res = checkInByAppointment(appointmentId);
+    const res = checkInByAppointment(appointmentId, activeCampus?.id);
     if (res.success) {
       showToast('签到成功，已加入待分诊队列', 'success');
+      setAppointmentIdInput('');
+      setQueryResults([]);
+      setQueryError('');
+    } else {
+      showToast(res.error ?? '签到失败', 'error');
+    }
+  };
+
+  const handleCheckInByQueryResult = (aptId: string) => {
+    const res = checkInByAppointment(aptId, activeCampus?.id);
+    if (res.success) {
+      showToast('签到成功，已加入待分诊队列', 'success');
+      setQueryResults([]);
+      setNameInput('');
+      setBirthdayInput('');
+      setAppointmentIdInput('');
+      setQueryError('');
     } else {
       showToast(res.error ?? '签到失败', 'error');
     }
@@ -126,11 +236,20 @@ export default function TriageQueue() {
 
   const handleConfirmTriage = (checkIn: CheckIn) => {
     if (!currentUser) return;
-    const res = confirmTriage(checkIn.id, currentUser.id, overrideBedId || undefined);
+    const apt = getApt(checkIn.appointmentId);
+    const bed = apt ? getBed(apt.bedId) : null;
+    const dept = confirmDepartment.trim() || bed?.department || checkIn.assignedDepartment;
+    const res = confirmTriage(
+      checkIn.id,
+      currentUser.id,
+      overrideBedId || undefined,
+      dept,
+    );
     if (res.success) {
       showToast('分诊确认成功，已入床', 'success');
       setConfirmTarget(null);
       setOverrideBedId('');
+      setConfirmDepartment('');
     } else {
       showToast(res.error ?? '分诊确认失败', 'error');
     }
@@ -166,13 +285,65 @@ export default function TriageQueue() {
     }
   };
 
+  const handleReassignTriage = (checkIn: CheckIn) => {
+    if (!currentUser) return;
+    if (!reassignBedId) {
+      showToast('请选择改派床位', 'error');
+      return;
+    }
+    const res = reassignTriage(
+      checkIn.id,
+      currentUser.id,
+      reassignBedId,
+      reassignDepartment.trim() || undefined,
+    );
+    if (res.success) {
+      showToast('分诊改派成功', 'success');
+      setReassignTarget(null);
+      setReassignBedId('');
+      setReassignDepartment('');
+    } else {
+      showToast(res.error ?? '改派失败', 'error');
+    }
+  };
+
+  const handleUndoTriage = (checkIn: CheckIn) => {
+    if (!currentUser) return;
+    if (!undoReason.trim()) {
+      showToast('请填写撤销原因', 'error');
+      return;
+    }
+    const res = undoTriage(checkIn.id, currentUser.id, undoReason.trim());
+    if (res.success) {
+      showToast('分诊已撤销，床位已释放', 'success');
+      setUndoTarget(null);
+      setUndoReason('');
+    } else {
+      showToast(res.error ?? '撤销失败', 'error');
+    }
+  };
+
+  const handleRestoreTriage = (checkIn: CheckIn) => {
+    if (!currentUser) return;
+    const undoRecords = getUndoRecords(checkIn.id);
+    const latestUndo = undoRecords.find((r) => !r.restored);
+    if (!latestUndo) {
+      showToast('未找到可恢复的撤销记录', 'error');
+      return;
+    }
+    const res = restoreTriage(latestUndo.id, currentUser.id);
+    if (res.success) {
+      showToast('分诊已恢复入床', 'success');
+    } else {
+      showToast(res.error ?? '恢复失败', 'error');
+    }
+  };
+
   const pendingAppointments = useMemo(() => {
     return appointments.filter(
-      (a) =>
-        a.status === 'pending' &&
-        a.appointmentDate === new Date().toISOString().slice(0, 10),
+      (a) => a.status === 'pending' && a.appointmentDate === todayStr,
     );
-  }, [appointments]);
+  }, [appointments, todayStr]);
 
   const getAvailableBeds = (checkIn: CheckIn) => {
     const apt = appointments.find((a) => a.id === checkIn.appointmentId);
@@ -185,9 +356,6 @@ export default function TriageQueue() {
     });
   };
 
-  const formatTime = (ts: number) =>
-    new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-
   const getPatient = (patientId: string) => patients.find((p) => p.id === patientId);
   const getApt = (appointmentId: string) => appointments.find((a) => a.id === appointmentId);
   const getBed = (bedId: string) => beds.find((b) => b.id === bedId);
@@ -196,12 +364,21 @@ export default function TriageQueue() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">签到与分诊</h1>
           <p className="text-sm text-slate-500 mt-1">患者到院签到 → 待分诊队列 → 确认入床或退回</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {activeCampus && (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-xs">
+              <Building2 className="w-3.5 h-3.5" />
+              {activeCampus.name} · {activeCampus.timezone}
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-medium">
+            {todayStr} · 今日
+          </span>
           <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-sm font-medium">
             待分诊 {pendingCount} 人
           </span>
@@ -213,9 +390,36 @@ export default function TriageQueue() {
           <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
             <h2 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
               <UserCheck className="w-4 h-4 text-indigo-500" />
-              患者签到
+              患者报到
             </h2>
-            <div className="space-y-3">
+
+            <div className="flex gap-1 p-1 bg-slate-100 rounded-lg mb-4">
+              {[
+                { k: 'phone', label: '手机号', icon: <Phone className="w-3 h-3" /> },
+                { k: 'appointment', label: '预约号', icon: <Hash className="w-3 h-3" /> },
+                { k: 'nameBirthday', label: '姓名+生日', icon: <CalendarDays className="w-3 h-3" /> },
+              ].map((tab) => (
+                <button
+                  key={tab.k}
+                  onClick={() => {
+                    setCheckInTab(tab.k as CheckInTab);
+                    setQueryError('');
+                    setQueryResults([]);
+                  }}
+                  className={cn(
+                    'flex-1 inline-flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-medium transition-colors',
+                    checkInTab === tab.k
+                      ? 'bg-white text-indigo-600 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700',
+                  )}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {checkInTab === 'phone' && (
               <div>
                 <label className="text-xs text-slate-500 mb-1 block">手机号签到</label>
                 <div className="flex gap-2">
@@ -238,32 +442,128 @@ export default function TriageQueue() {
                   </button>
                 </div>
               </div>
-              {pendingAppointments.length > 0 && (
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">按预约签到</label>
-                  <div className="space-y-2 max-h-48 overflow-y-auto">
-                    {pendingAppointments.map((apt) => {
-                      const patient = getPatient(apt.patientId);
-                      const bed = getBed(apt.bedId);
-                      return (
-                        <button
-                          key={apt.id}
-                          onClick={() => handleCheckInByAppointment(apt.id)}
-                          className="w-full text-left px-3 py-2 rounded-lg border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50 transition-colors"
-                        >
-                          <div className="text-sm font-medium text-slate-700">
-                            {patient?.name ?? '未知'}
-                          </div>
-                          <div className="text-xs text-slate-500">
-                            {bed?.bedNumber ?? '-'} · {apt.appointmentDate}
-                          </div>
-                        </button>
-                      );
-                    })}
+            )}
+
+            {checkInTab === 'appointment' && (
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">预约号查询</label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Hash className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      value={appointmentIdInput}
+                      onChange={(e) => setAppointmentIdInput(e.target.value)}
+                      placeholder="输入预约号（如 appointment-005）"
+                      className="w-full pl-8 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      onKeyDown={(e) => e.key === 'Enter' && handleQueryByAppointment()}
+                    />
+                  </div>
+                  <button
+                    onClick={handleQueryByAppointment}
+                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors whitespace-nowrap"
+                  >
+                    查询
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {checkInTab === 'nameBirthday' && (
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <User className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      value={nameInput}
+                      onChange={(e) => setNameInput(e.target.value)}
+                      placeholder="姓名"
+                      className="w-full pl-8 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div className="relative flex-1">
+                    <CalendarDays className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="date"
+                      value={birthdayInput}
+                      onChange={(e) => setBirthdayInput(e.target.value)}
+                      className="w-full pl-8 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
                   </div>
                 </div>
-              )}
-            </div>
+                <button
+                  onClick={handleQueryByNameBirthday}
+                  className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
+                >
+                  查询今日预约
+                </button>
+              </div>
+            )}
+
+            {queryResults.length > 0 && (
+              <div className="mt-3 space-y-2 max-h-56 overflow-y-auto">
+                <label className="text-xs text-slate-500 mb-1 block">查询结果 - 点击签到</label>
+                {queryResults.map((qr) => {
+                  const apt = qr.appointment;
+                  return (
+                    <button
+                      key={qr.checkInId || apt.id}
+                      onClick={() => handleCheckInByQueryResult(apt.id)}
+                      disabled={qr.checkInStatus === 'checked_in' || qr.checkInStatus === 'triaging' || qr.checkInStatus === 'triage_confirmed'}
+                      className={cn(
+                        'w-full text-left px-3 py-2 rounded-lg border transition-colors',
+                        qr.checkInStatus
+                          ? 'border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed'
+                          : 'border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50',
+                      )}
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="text-sm font-medium text-slate-700">
+                            {qr.patient?.name ?? '未知'}
+                          </div>
+                          <div className="text-xs text-slate-500">
+                            {qr.bed?.bedNumber ?? '-'} · {qr.slot?.label ?? '-'}
+                          </div>
+                        </div>
+                        {qr.checkInStatus && (
+                          <span className="text-xs px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">
+                            已签到
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {pendingAppointments.length > 0 && checkInTab === 'phone' && (
+              <div className="mt-3">
+                <label className="text-xs text-slate-500 mb-1 block">或按今日预约快速签到</label>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {pendingAppointments.map((apt) => {
+                    const patient = getPatient(apt.patientId);
+                    const bed = getBed(apt.bedId);
+                    return (
+                      <button
+                        key={apt.id}
+                        onClick={() => handleCheckInByAppointment(apt.id)}
+                        className="w-full text-left px-3 py-2 rounded-lg border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50 transition-colors"
+                      >
+                        <div className="text-sm font-medium text-slate-700">
+                          {patient?.name ?? '未知'}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          {bed?.bedNumber ?? '-'} · {apt.appointmentDate} · {getSlot(apt.slotId)?.label}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -291,6 +591,7 @@ export default function TriageQueue() {
                   <option value="triaging">分诊中</option>
                   <option value="triage_confirmed">已入床</option>
                   <option value="triage_rejected">已退回</option>
+                  <option value="triage_undone">已撤销</option>
                 </select>
                 <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
               </div>
@@ -318,6 +619,8 @@ export default function TriageQueue() {
                   const availableBeds = getAvailableBeds(checkIn);
                   const isActionable =
                     checkIn.status === 'checked_in' || checkIn.status === 'triaging';
+                  const undoRecords = getUndoRecords(checkIn.id);
+                  const hasRestorableUndo = undoRecords.some((r) => !r.restored);
 
                   return (
                     <div
@@ -325,6 +628,7 @@ export default function TriageQueue() {
                       className={cn(
                         'p-4 hover:bg-slate-50/50 transition-colors',
                         checkIn.status === 'triage_rejected' && 'opacity-60',
+                        checkIn.status === 'triage_undone' && 'bg-purple-50/30',
                       )}
                     >
                       <div className="flex items-start gap-4">
@@ -365,6 +669,12 @@ export default function TriageQueue() {
                                 {rule.disease}
                               </span>
                             )}
+                            {(checkIn.assignedDepartment || bed?.department) && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-50 text-cyan-700">
+                                <Stethoscope className="w-3 h-3" />
+                                {checkIn.assignedDepartment || bed?.department}
+                              </span>
+                            )}
                           </div>
                           <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
                             <span className="flex items-center gap-1">
@@ -377,9 +687,9 @@ export default function TriageQueue() {
                             </span>
                             <span className="flex items-center gap-1">
                               <CalendarClock className="w-3 h-3" />
-                              {slot?.label ?? '-'} {apt ? `${formatTime(apt.startTime)}-${formatTime(apt.endTime)}` : ''}
+                              {slot?.label ?? '-'} {apt ? `${formatTime(apt.startTime, campusTimezone)}-${formatTime(apt.endTime, campusTimezone)}` : ''}
                             </span>
-                            <span>签到 {formatTime(checkIn.checkInTime)}</span>
+                            <span>签到 {formatTime(checkIn.checkInTime, campusTimezone)}</span>
                             {handler && <span>处理人 {handler.name}</span>}
                           </div>
                           {checkIn.conflictReason && (
@@ -398,19 +708,33 @@ export default function TriageQueue() {
                             </div>
                           )}
                         </div>
-                        <div className="flex items-center gap-2 flex-shrink-0">
+                        <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
                           {isActionable && (
                             <>
                               <button
                                 onClick={() => {
                                   setConfirmTarget(checkIn);
                                   setOverrideBedId('');
+                                  setConfirmDepartment(checkIn.assignedDepartment || bed?.department || '');
                                 }}
                                 className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700 transition-colors"
                               >
                                 <CheckCircle2 className="w-3.5 h-3.5" />
                                 确认入床
                               </button>
+                              <RoleGate allowed={['admin', 'senior']} fallback={null}>
+                                <button
+                                  onClick={() => {
+                                    setReassignTarget(checkIn);
+                                    setReassignBedId('');
+                                    setReassignDepartment(checkIn.assignedDepartment || bed?.department || '');
+                                  }}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-lg text-xs font-medium hover:bg-indigo-100 transition-colors"
+                                >
+                                  <ArrowRightLeft className="w-3.5 h-3.5" />
+                                  改派
+                                </button>
+                              </RoleGate>
                               <button
                                 onClick={() => {
                                   setRejectTarget(checkIn);
@@ -424,16 +748,41 @@ export default function TriageQueue() {
                             </>
                           )}
                           {checkIn.status === 'triage_confirmed' && (
+                            <>
+                              <RoleGate allowed={['admin', 'senior']} fallback={null}>
+                                <button
+                                  onClick={() => {
+                                    setUndoTarget(checkIn);
+                                    setUndoReason('');
+                                  }}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-purple-50 text-purple-600 border border-purple-200 rounded-lg text-xs font-medium hover:bg-purple-100 transition-colors"
+                                >
+                                  <Undo2 className="w-3.5 h-3.5" />
+                                  撤销
+                                </button>
+                              </RoleGate>
+                              <RoleGate allowed={['admin', 'senior']} fallback={null}>
+                                <button
+                                  onClick={() => {
+                                    setModifyTarget(checkIn);
+                                    setModifyNote(checkIn.triageNote ?? '');
+                                  }}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-xs font-medium hover:bg-slate-200 transition-colors"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                  修改
+                                </button>
+                              </RoleGate>
+                            </>
+                          )}
+                          {checkIn.status === 'triage_undone' && hasRestorableUndo && (
                             <RoleGate allowed={['admin', 'senior']} fallback={null}>
                               <button
-                                onClick={() => {
-                                  setModifyTarget(checkIn);
-                                  setModifyNote(checkIn.triageNote ?? '');
-                                }}
-                                className="inline-flex items-center gap-1 px-3 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-xs font-medium hover:bg-slate-200 transition-colors"
+                                onClick={() => handleRestoreTriage(checkIn)}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 bg-teal-50 text-teal-700 border border-teal-200 rounded-lg text-xs font-medium hover:bg-teal-100 transition-colors"
                               >
-                                <Edit3 className="w-3.5 h-3.5" />
-                                修改
+                                <RotateCcw className="w-3.5 h-3.5" />
+                                恢复
                               </button>
                             </RoleGate>
                           )}
@@ -464,6 +813,7 @@ export default function TriageQueue() {
         onCancel={() => {
           setConfirmTarget(null);
           setOverrideBedId('');
+          setConfirmDepartment('');
         }}
       >
         {confirmTarget && (() => {
@@ -476,7 +826,7 @@ export default function TriageQueue() {
 
           return (
             <div className="space-y-3 mt-2">
-              <div className="bg-slate-50 rounded-lg p-3 space-y-1 text-sm">
+              <div className="bg-slate-50 rounded-lg p-3 space-y-1.5 text-sm">
                 <div className="flex justify-between">
                   <span className="text-slate-500">患者</span>
                   <span className="font-medium">{getPatient(confirmTarget.patientId)?.name}</span>
@@ -508,10 +858,22 @@ export default function TriageQueue() {
                   <div className="flex justify-between">
                     <span className="text-slate-500">预约时段</span>
                     <span className="font-medium">
-                      {getSlot(apt.slotId)?.label} {formatTime(apt.startTime)}-{formatTime(apt.endTime)}
+                      {getSlot(apt.slotId)?.label} {formatTime(apt.startTime, campusTimezone)}-{formatTime(apt.endTime, campusTimezone)}
                     </span>
                   </div>
                 )}
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">
+                  接诊科室
+                </label>
+                <input
+                  type="text"
+                  value={confirmDepartment}
+                  onChange={(e) => setConfirmDepartment(e.target.value)}
+                  placeholder="例：呼吸内科"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
               </div>
               {availableBeds.length > 0 && (
                 <div>
@@ -579,6 +941,89 @@ export default function TriageQueue() {
             onChange={(e) => setModifyNote(e.target.value)}
             placeholder="填写备注..."
             className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+            rows={3}
+          />
+        </div>
+      </ConfirmModal>
+
+      <ConfirmModal
+        open={!!reassignTarget}
+        title="改派分诊床位"
+        description="调整床位和接诊科室，不立即入床"
+        confirmText="确认改派"
+        onConfirm={() => reassignTarget && handleReassignTriage(reassignTarget)}
+        onCancel={() => {
+          setReassignTarget(null);
+          setReassignBedId('');
+          setReassignDepartment('');
+        }}
+      >
+        {reassignTarget && (() => {
+          const apt = getApt(reassignTarget.appointmentId);
+          const availableBeds = getAvailableBeds(checkIns.find((c) => c.id === reassignTarget.id)!);
+          return (
+            <div className="space-y-3 mt-2">
+              <div className="bg-slate-50 rounded-lg p-3 space-y-1.5 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">患者</span>
+                  <span className="font-medium">{getPatient(reassignTarget.patientId)?.name}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">当前床位</span>
+                  <span className="font-medium">{apt ? getBed(apt.bedId)?.bedNumber ?? '-' : '-'}</span>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">接诊科室</label>
+                <input
+                  type="text"
+                  value={reassignDepartment}
+                  onChange={(e) => setReassignDepartment(e.target.value)}
+                  placeholder="例：呼吸内科"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">
+                  改派床位 <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={reassignBedId}
+                  onChange={(e) => setReassignBedId(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                >
+                  <option value="">请选择床位</option>
+                  {availableBeds.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.bedNumber}（{b.zone}区 · {b.type === 'normal' ? '普通' : b.type === 'negative' ? '负压' : '轮椅位'}）
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          );
+        })()}
+      </ConfirmModal>
+
+      <ConfirmModal
+        open={!!undoTarget}
+        title="撤销分诊入床"
+        description="撤销后床位将释放为清洁中，预约恢复已签到状态，可再次确认或改派"
+        confirmText="确认撤销"
+        danger
+        onConfirm={() => undoTarget && handleUndoTriage(undoTarget)}
+        onCancel={() => {
+          setUndoTarget(null);
+          setUndoReason('');
+        }}
+      >
+        <div className="mt-2">
+          <label className="text-xs text-slate-500 mb-1 block">撤销原因</label>
+          <textarea
+            value={undoReason}
+            onChange={(e) => setUndoReason(e.target.value)}
+            placeholder="请填写撤销原因..."
+            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
             rows={3}
           />
         </div>
