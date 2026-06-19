@@ -148,12 +148,12 @@ export function Layout({ children }: LayoutProps) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `周转表_${dateStr}.csv`;
+      a.download = `daily-report-${dateStr}.csv`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showToast('success', `已导出 ${dateStr} 周转表`);
+      showToast('success', `已导出 daily-report-${dateStr}.csv`);
     } catch (e) {
       showToast('error', '导出失败');
     }

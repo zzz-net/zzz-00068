@@ -1021,8 +1021,13 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         const careCount = state.careNotes.filter(
           (n) => n.admissionId === adm.id,
         ).length;
-        const dischargedAt = adm.dischargedAt ?? Date.now();
-        const hours = (dischargedAt - adm.admittedAt) / (1000 * 60 * 60);
+        let hours: number;
+        if (adm.dischargedAt) {
+          hours = (adm.dischargedAt - adm.admittedAt) / (1000 * 60 * 60);
+        } else {
+          const now = Date.now();
+          hours = now > adm.admittedAt ? (now - adm.admittedAt) / (1000 * 60 * 60) : 0;
+        }
         const hasAbnormal = state.abnormalRecords.some(
           (r) => r.bedId === adm.bedId,
         )

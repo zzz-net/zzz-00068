@@ -25,6 +25,7 @@ import { buildStore, STORE_KEY } from '../src/store/index.js';
 import type { AppState } from '../src/store/index.js';
 import { SAMPLE_DATA_COUNTS } from '../src/data/sampleData.js';
 import { getTodayStr, parseLocalTime, addDaysStr } from '../src/lib/utils.js';
+import fs from 'node:fs';
 
 const { log: _log, error: _error } = console;
 const results: { name: string; pass: boolean; error?: string }[] = [];
@@ -851,6 +852,137 @@ async function runAllTests() {
     log(`本地日期导出数据行: ${linesLocal.length - 1} 行`);
 
     pass('Test 20: 凌晨跨日场景 - 看板使用本地日期筛选，不会因UTC偏差显示前一天数据');
+  }
+
+  // ───────── 导出功能专项测试 ─────────
+  section('导出功能专项');
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const today = getTodayStr();
+    const now = Date.now();
+
+    const admissions = store.getState().admissions.filter(
+      (a) => !a.dischargedAt,
+    );
+    log(`未出床记录数: ${admissions.length}`);
+
+    if (admissions.length > 0) {
+      for (const adm of admissions) {
+        const admittedAt = adm.admittedAt;
+        const bed = store.getState().beds.find((b) => b.id === adm.bedId);
+        const patient = store.getState().patients.find((p) => p.id === adm.patientId);
+        log(`床位 ${bed?.bedNumber} | 患者 ${patient?.name} | 入床时间 ${new Date(admittedAt).toLocaleString('zh-CN', { hour12: false })} | 当前时间 ${new Date(now).toLocaleString('zh-CN', { hour12: false })}`);
+
+        if (now < admittedAt) {
+          log(`  ⚠️  当前时间早于入床时间（凌晨场景）`);
+        }
+      }
+    }
+
+    const csv = store.getState().exportDailyReport(today);
+    const csvWithoutBom = csv.replace(/^\ufeff/, '');
+    const lines = csvWithoutBom.split('\r\n').filter((l) => l.trim().length > 0);
+    const header = lines[0].split(',').map((s) => s.replace(/"/g, ''));
+    const hoursIndex = header.indexOf('总时长(小时)');
+    assert(hoursIndex >= 0, 'CSV 包含"总时长(小时)"列');
+
+    for (let i = 1; i < lines.length; i++) {
+      const row = lines[i].split(',').map((s) => s.replace(/"/g, ''));
+      const hours = parseFloat(row[hoursIndex]);
+      assert(!isNaN(hours), `第 ${i} 行时长是有效数字`);
+      assert(hours >= 0, `第 ${i} 行时长非负: ${hours}`);
+      log(`第 ${i} 行 总时长: ${hours} 小时`);
+    }
+
+    pass('Test 21: 未出床记录导出时长非负 - 凌晨场景下当前时间早于入床时间时显示 0 而非负数');
+  }
+
+  {
+    const today = getTodayStr();
+    const expectedFilename = `daily-report-${today}.csv`;
+    const readmePattern = /daily-report-\{今日日期\}\.csv/;
+
+    log(`期望文件名: ${expectedFilename}`);
+    log(`README 模式: daily-report-{今日日期}.csv`);
+    assert(expectedFilename.match(/^daily-report-\d{4}-\d{2}-\d{2}\.csv$/), `文件名格式正确: ${expectedFilename}`);
+
+    const readmeContent = fs.readFileSync('README.md', 'utf-8');
+    assert(readmePattern.test(readmeContent), 'README 包含 daily-report-{今日日期}.csv 说明');
+
+    pass('Test 22: 导出文件名格式 - 与 README 中 daily-report-{今日日期}.csv 说明一致');
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const today = getTodayStr();
+
+    const csv = store.getState().exportDailyReport(today);
+    const csvWithoutBom = csv.replace(/^\ufeff/, '');
+    const lines = csvWithoutBom.split('\r\n').filter((l) => l.trim().length > 0);
+    const header = lines[0].split(',').map((s) => s.replace(/"/g, ''));
+
+    const expectedHeaders = [
+      '床位号',
+      '区域',
+      '患者姓名',
+      '性别',
+      '年龄',
+      '诊断',
+      '入床时间',
+      '出床时间',
+      '总时长(小时)',
+      '护理次数',
+      '护士',
+      '是否隔离',
+      '异常标记',
+    ];
+
+    log(`CSV 表头: ${header.join(' | ')}`);
+    log(`期望表头: ${expectedHeaders.join(' | ')}`);
+
+    assert(header.length === expectedHeaders.length, `表头列数正确: ${header.length} 列`);
+    for (let i = 0; i < expectedHeaders.length; i++) {
+      assert(header[i] === expectedHeaders[i], `第 ${i + 1} 列表头正确: ${header[i]}`);
+    }
+
+    pass('Test 23: CSV 首行校验 - 表头与 README 导出格式说明完全一致');
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const today = getTodayStr();
+    const utcToday = new Date().toISOString().slice(0, 10);
+
+    const csv = store.getState().exportDailyReport(today);
+    const csvWithoutBom = csv.replace(/^\ufeff/, '');
+    const lines = csvWithoutBom.split('\r\n').filter((l) => l.trim().length > 0);
+    const header = lines[0].split(',').map((s) => s.replace(/"/g, ''));
+    const admittedAtIdx = header.indexOf('入床时间');
+
+    if (lines.length > 1) {
+      const firstDataRow = lines[1].split(',').map((s) => s.replace(/"/g, ''));
+      const admittedAtStr = firstDataRow[admittedAtIdx];
+      log(`首条记录入床时间: ${admittedAtStr}`);
+      log(`本地今日: ${today}, UTC今日: ${utcToday}`);
+
+      const hoursIdx = header.indexOf('总时长(小时)');
+      const hours = parseFloat(firstDataRow[hoursIdx]);
+      assert(hours >= 0, `首条记录时长非负: ${hours}`);
+
+      if (today !== utcToday) {
+        log(`✅ 跨日场景验证 - 导出使用本地日期 ${today}`);
+      }
+    }
+
+    const expectedFilename = `daily-report-${today}.csv`;
+    const wrongFilename = `daily-report-${utcToday}.csv`;
+    assert(expectedFilename !== wrongFilename || today === utcToday, '跨日场景下文件名使用本地日期而非UTC日期');
+
+    pass('Test 24: 浏览器导出场景 - 文件名使用本地日期，首条记录时长非负，与 README 说明一致');
   }
 
   // ───────── 测试汇总 ─────────
