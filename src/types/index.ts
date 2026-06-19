@@ -53,7 +53,24 @@ export interface Patient {
   createdAt: number;
 }
 
-export type AppointmentStatus = 'pending' | 'admitted' | 'completed' | 'cancelled';
+export type CheckInStatus = 'checked_in' | 'triaging' | 'triage_confirmed' | 'triage_rejected';
+
+export interface CheckIn {
+  id: string;
+  appointmentId: string;
+  patientId: string;
+  phone?: string;
+  checkInTime: number;
+  status: CheckInStatus;
+  handledBy?: string;
+  conflictReason?: string;
+  triageNote?: string;
+  arrivalFlag?: 'early' | 'late' | 'on_time';
+  suggestedBedId?: string;
+  createdAt: number;
+}
+
+export type AppointmentStatus = 'pending' | 'checked_in' | 'admitted' | 'completed' | 'cancelled';
 
 export interface Appointment {
   id: string;
@@ -114,6 +131,10 @@ export interface CareNote {
 export type OperationType =
   | 'appointment_create'
   | 'appointment_cancel'
+  | 'patient_checkin'
+  | 'triage_confirm'
+  | 'triage_reject'
+  | 'triage_modify'
   | 'admission_confirm'
   | 'discharge_normal'
   | 'discharge_force'
@@ -137,7 +158,8 @@ export type OperationTargetType =
   | 'isolation_rule'
   | 'time_slot'
   | 'patient'
-  | 'care_note';
+  | 'care_note'
+  | 'checkin';
 
 export interface OperationLog {
   id: string;
@@ -160,6 +182,12 @@ export type AbnormalType =
   | 'force_release_denied'
   | 'isolation_violation'
   | 'data_conflict'
+  | 'duplicate_checkin'
+  | 'early_arrival'
+  | 'late_arrival'
+  | 'bed_occupied_triage'
+  | 'isolation_conflict_triage'
+  | 'triage_permission_denied'
   | 'backup_version_unknown'
   | 'backup_bed_number_conflict'
   | 'backup_patient_duplicate_admission'
@@ -194,7 +222,8 @@ export type BackupRestoreEntity =
   | 'admissions'
   | 'careNotes'
   | 'operationLogs'
-  | 'abnormalRecords';
+  | 'abnormalRecords'
+  | 'checkIns';
 
 export interface BackupData {
   beds: Bed[];
@@ -207,6 +236,7 @@ export interface BackupData {
   careNotes: CareNote[];
   operationLogs: OperationLog[];
   abnormalRecords: AbnormalRecord[];
+  checkIns: CheckIn[];
 }
 
 export interface BackupFile {
@@ -232,6 +262,7 @@ export interface RestoreDiff {
   careNotes: EntityDiff;
   operationLogs: EntityDiff;
   abnormalRecords: EntityDiff;
+  checkIns: EntityDiff;
 }
 
 export interface ValidationIssue {
@@ -302,6 +333,7 @@ export interface RestoreDetailedDiff {
   careNotes: EntityChanges;
   operationLogs: EntityChanges;
   abnormalRecords: EntityChanges;
+  checkIns: EntityChanges;
 }
 
 export interface RestoreHistoryRecord {

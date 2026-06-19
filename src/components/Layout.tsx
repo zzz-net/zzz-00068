@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   CalendarClock,
+  ClipboardCheck,
   History,
   Settings,
   ChevronLeft,
@@ -43,6 +44,7 @@ const roleColors: Record<NurseRole, string> = {
 const routeTitleMap: Record<string, string> = {
   '/dashboard': '看板',
   '/appointments': '预约管理',
+  '/triage': '签到与分诊',
   '/history': '历史记录',
   '/config': '系统配置',
 };
@@ -107,6 +109,11 @@ export function Layout({ children }: LayoutProps) {
         label: '预约',
         path: '/appointments',
         icon: <CalendarClock className="w-5 h-5" />,
+      },
+      {
+        label: '分诊',
+        path: '/triage',
+        icon: <ClipboardCheck className="w-5 h-5" />,
       },
       {
         label: '历史',

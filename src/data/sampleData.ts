@@ -9,6 +9,7 @@ import type {
   CareNote,
   OperationLog,
   AbnormalRecord,
+  CheckIn,
 } from '../types';
 import { getTodayStr, parseLocalTime } from '../lib/utils';
 
@@ -70,7 +71,7 @@ const appointments: Appointment[] = [
   { id: 'appointment-001', patientId: 'patient-001', bedId: 'bed-001', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('08:00'), endTime: parseTodayTime('12:00'), status: 'admitted', createdBy: 'nurse-002', createdAt: now - 4 * dayMs },
   { id: 'appointment-002', patientId: 'patient-002', bedId: 'bed-002', slotId: 'slot-002', appointmentDate: todayStr, startTime: parseTodayTime('13:00'), endTime: parseTodayTime('17:00'), status: 'admitted', createdBy: 'nurse-003', createdAt: now - 3 * dayMs },
   { id: 'appointment-003', patientId: 'patient-003', bedId: 'bed-005', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('08:30'), endTime: parseTodayTime('12:00'), isolationRuleId: 'rule-001', status: 'admitted', createdBy: 'nurse-002', createdAt: now - 2 * dayMs },
-  { id: 'appointment-004', patientId: 'patient-005', bedId: 'bed-003', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('09:00'), endTime: parseTodayTime('11:00'), isolationRuleId: 'rule-002', status: 'pending', createdBy: 'nurse-004', createdAt: now - 2 * 60 * 60 * 1000 },
+  { id: 'appointment-004', patientId: 'patient-005', bedId: 'bed-003', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('09:00'), endTime: parseTodayTime('11:00'), isolationRuleId: 'rule-002', status: 'checked_in', createdBy: 'nurse-004', createdAt: now - 2 * 60 * 60 * 1000 },
   { id: 'appointment-005', patientId: 'patient-007', bedId: 'bed-008', slotId: 'slot-003', appointmentDate: todayStr, startTime: parseTodayTime('17:30'), endTime: parseTodayTime('20:30'), status: 'pending', createdBy: 'nurse-003', createdAt: now - 1 * 60 * 60 * 1000 },
   { id: 'appointment-006', patientId: 'patient-004', bedId: 'bed-009', slotId: 'slot-002', appointmentDate: todayStr, startTime: parseTodayTime('14:00'), endTime: parseTodayTime('17:00'), status: 'cancelled', createdBy: 'nurse-004', createdAt: now - 12 * 60 * 60 * 1000 },
 ];
@@ -106,6 +107,10 @@ const abnormalRecords: AbnormalRecord[] = [
   { id: 'abnormal-002', type: 'force_release_denied', operationLogId: 'op-log-008', description: '历史强制释放B-10床操作，已由管理员张管理审批通过，记录异常留痕备查。', bedId: 'bed-010', handled: true, handledBy: 'nurse-001', handledAt: now - 1 * 60 * 60 * 1000, createdAt: now - 2 * 60 * 60 * 1000 },
 ];
 
+const checkIns: CheckIn[] = [
+  { id: 'checkin-001', appointmentId: 'appointment-004', patientId: 'patient-005', phone: '13800138005', checkInTime: now - 30 * 60 * 1000, status: 'checked_in', arrivalFlag: 'on_time', createdAt: now - 30 * 60 * 1000 },
+];
+
 export interface SampleData {
   nurses: Nurse[];
   beds: Bed[];
@@ -117,6 +122,7 @@ export interface SampleData {
   careNotes: CareNote[];
   operationLogs: OperationLog[];
   abnormalRecords: AbnormalRecord[];
+  checkIns: CheckIn[];
 }
 
 export const sampleData: SampleData = {
@@ -130,6 +136,7 @@ export const sampleData: SampleData = {
   careNotes,
   operationLogs,
   abnormalRecords,
+  checkIns,
 };
 
 export const SAMPLE_DATA_COUNTS = {
@@ -143,4 +150,5 @@ export const SAMPLE_DATA_COUNTS = {
   careNotes: careNotes.length,
   operationLogs: operationLogs.length,
   abnormalRecords: abnormalRecords.length,
+  checkIns: checkIns.length,
 };

@@ -31,6 +31,8 @@ import {
   RefreshCw,
   Database,
   Archive,
+  UserCheck,
+  ClipboardCheck,
 } from 'lucide-react';
 import { useAppStore } from '@/store';
 import { useToastStore } from '@/store/toast';
@@ -40,6 +42,10 @@ import type { OperationType, AbnormalType } from '@/types';
 const OPERATION_LABELS: Record<OperationType, { label: string; icon: any; color: string }> = {
   appointment_create: { label: '预约创建', icon: CalendarDays, color: 'text-blue-600 bg-blue-50 border-blue-200' },
   appointment_cancel: { label: '预约取消', icon: XCircle, color: 'text-gray-600 bg-gray-50 border-gray-200' },
+  patient_checkin: { label: '患者签到', icon: UserCheck, color: 'text-cyan-600 bg-cyan-50 border-cyan-200' },
+  triage_confirm: { label: '分诊确认', icon: ClipboardCheck, color: 'text-emerald-600 bg-emerald-50 border-emerald-200' },
+  triage_reject: { label: '分诊退回', icon: XCircle, color: 'text-rose-600 bg-rose-50 border-rose-200' },
+  triage_modify: { label: '分诊修改', icon: ClipboardCheck, color: 'text-amber-600 bg-amber-50 border-amber-200' },
   admission_confirm: { label: '入床确认', icon: CheckSquare, color: 'text-emerald-600 bg-emerald-50 border-emerald-200' },
   discharge_normal: { label: '正常出床', icon: CheckCircle2, color: 'text-green-600 bg-green-50 border-green-200' },
   discharge_force: { label: '强制释放', icon: AlertCircle, color: 'text-orange-600 bg-orange-50 border-orange-200' },
@@ -61,6 +67,12 @@ const ABNORMAL_LABELS: Record<AbnormalType, { label: string; icon: any; color: s
   force_release_denied: { label: '强制释放被拒', icon: ShieldAlert, color: 'text-rose-700 bg-rose-50 border-rose-200' },
   isolation_violation: { label: '隔离违规', icon: Bug, color: 'text-purple-700 bg-purple-50 border-purple-200' },
   data_conflict: { label: '数据冲突', icon: FileWarning, color: 'text-amber-700 bg-amber-50 border-amber-200' },
+  duplicate_checkin: { label: '重复签到', icon: UserCheck, color: 'text-cyan-700 bg-cyan-50 border-cyan-200' },
+  early_arrival: { label: '提前到院', icon: Clock, color: 'text-amber-700 bg-amber-50 border-amber-200' },
+  late_arrival: { label: '迟到', icon: Clock, color: 'text-orange-700 bg-orange-50 border-orange-200' },
+  bed_occupied_triage: { label: '分诊床位占用', icon: AlertCircle, color: 'text-rose-700 bg-rose-50 border-rose-200' },
+  isolation_conflict_triage: { label: '分诊隔离冲突', icon: Bug, color: 'text-purple-700 bg-purple-50 border-purple-200' },
+  triage_permission_denied: { label: '分诊权限不足', icon: ShieldAlert, color: 'text-rose-700 bg-rose-50 border-rose-200' },
   backup_version_unknown: { label: '备份版本未知', icon: FileJson, color: 'text-red-700 bg-red-50 border-red-200' },
   backup_bed_number_conflict: { label: '床位编号冲突', icon: Database, color: 'text-red-700 bg-red-50 border-red-200' },
   backup_patient_duplicate_admission: { label: '患者重复在床', icon: Users, color: 'text-red-700 bg-red-50 border-red-200' },

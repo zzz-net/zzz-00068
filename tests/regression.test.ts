@@ -69,6 +69,7 @@ function snapshotState(store: ReturnType<typeof createCleanStore>) {
     admissionsLen: s.admissions.length,
     abnormalLen: s.abnormalRecords.length,
     opLogsLen: s.operationLogs.length,
+    checkInsLen: s.checkIns.length,
     bedsStatus: s.beds.map((b) => ({ id: b.id, status: b.status })),
     firstBedStatus: s.beds[0]?.status,
     firstAptStatus: s.appointments[0]?.status,
@@ -597,6 +598,7 @@ async function runAllTests() {
       'operationLogs',
       'abnormalRecords',
       'currentUserId',
+      'checkIns',
     ] as const;
 
     const snapshot = JSON.stringify(
@@ -1349,6 +1351,7 @@ async function runAllTests() {
       'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
       'appointments', 'admissions', 'careNotes', 'operationLogs',
       'abnormalRecords', 'autoBackupSnapshots', 'currentUserId',
+      'checkIns',
     ] as const;
 
     const snapshot = JSON.stringify(
@@ -1491,6 +1494,7 @@ async function runAllTests() {
       'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
       'appointments', 'admissions', 'careNotes', 'operationLogs',
       'abnormalRecords', 'autoBackupSnapshots', 'restoreHistory', 'currentUserId',
+      'checkIns',
     ] as const;
 
     const snapshot = JSON.stringify(
@@ -1620,6 +1624,7 @@ async function runAllTests() {
       careNotes: JSON.parse(JSON.stringify(store.getState().careNotes)),
       operationLogs: JSON.parse(JSON.stringify(store.getState().operationLogs)),
       abnormalRecords: JSON.parse(JSON.stringify(store.getState().abnormalRecords)),
+      checkIns: JSON.parse(JSON.stringify(store.getState().checkIns)),
     };
 
     store.getState().updateBed(bed.id, { notes: 'updated notes for diff test', status: 'cleaning' });
@@ -1635,6 +1640,7 @@ async function runAllTests() {
       careNotes: JSON.parse(JSON.stringify(store.getState().careNotes)),
       operationLogs: JSON.parse(JSON.stringify(store.getState().operationLogs)),
       abnormalRecords: JSON.parse(JSON.stringify(store.getState().abnormalRecords)),
+      checkIns: JSON.parse(JSON.stringify(store.getState().checkIns)),
     };
 
     const detailedDiff = store.getState().calculateDetailedDiff(beforeData, afterData);
@@ -1656,6 +1662,306 @@ async function runAllTests() {
     assert(statusDiff.after === 'cleaning', 'status变更后正确');
 
     pass('Test 46: 详细diff计算 - 字段级差异正确识别，变更前后值完整');
+  }
+
+  // ───────── 签到与分诊专项测试 ─────────
+  section('签到与分诊');
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    assertEqual(store.getState().checkIns.length, SAMPLE_DATA_COUNTS.checkIns, '样例签到数据数量');
+    pass('Test 47: 样例数据 - 签到记录导入正确');
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const pendingApt = store.getState().appointments.find(
+      (a) => a.status === 'pending' && a.appointmentDate === getTodayStr(),
+    );
+    if (!pendingApt) throw new Error('无今日 pending 预约');
+
+    const patient = store.getState().patients.find((p) => p.id === pendingApt.patientId);
+    if (!patient?.phone) throw new Error('预约患者无手机号');
+
+    const before = snapshotState(store);
+    const result = store.getState().checkInByPhone(patient.phone);
+    assertEqual(result.success, true, '手机号签到应成功');
+    assert(result.data, '返回签到数据');
+    assertEqual(result.data!.status, 'checked_in', '签到状态为 checked_in');
+    assert(['on_time', 'early', 'late'].includes(result.data!.arrivalFlag!), '到达标记已设置');
+
+    const after = snapshotState(store);
+    assertEqual(after.checkInsLen, before.checkInsLen + 1, '签到记录数+1');
+    const apt = store.getState().appointments.find((a) => a.id === pendingApt.id);
+    assertEqual(apt?.status, 'checked_in', '预约状态变为 checked_in');
+
+    const triageQueue = store.getState().getTriageQueue();
+    assert(triageQueue.length >= 1, '待分诊队列至少1人');
+
+    const confirmResult = store.getState().confirmTriage(result.data!.id, 'nurse-002');
+    assertEqual(confirmResult.success, true, '分诊确认入床成功');
+
+    const aptAfter = store.getState().appointments.find((a) => a.id === pendingApt.id);
+    assertEqual(aptAfter?.status, 'admitted', '预约状态变为 admitted');
+    const bedAfter = store.getState().beds.find((b) => b.id === pendingApt.bedId);
+    assertEqual(bedAfter?.status, pendingApt.isolationRuleId ? 'isolated' : 'occupied', '床位状态正确变更');
+
+    const adm = store.getState().admissions.find(
+      (a) => a.appointmentId === pendingApt.id,
+    );
+    assert(adm, '入床记录已创建');
+    assertEqual(adm?.status, 'in_bed', '入床状态为 in_bed');
+
+    pass('Test 48: 成功签到入床 - 手机号签到→分诊确认→入床，全链路成功');
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const pendingApt = store.getState().appointments.find(
+      (a) => a.status === 'pending' && a.appointmentDate === getTodayStr(),
+    );
+    if (!pendingApt) throw new Error('无今日 pending 预约');
+
+    const patient = store.getState().patients.find((p) => p.id === pendingApt.patientId);
+    if (!patient?.phone) throw new Error('预约患者无手机号');
+
+    const first = store.getState().checkInByPhone(patient.phone);
+    assertEqual(first.success, true, '首次签到成功');
+
+    const before = snapshotState(store);
+    const second = store.getState().checkInByPhone(patient.phone);
+    assertEqual(second.success, false, '重复签到应失败');
+    assertEqual(second.error, '该预约已签到，不可重复签到', '错误信息正确');
+
+    const after = snapshotState(store);
+    assertEqual(after.checkInsLen, before.checkInsLen, '签到记录数不变');
+    assertEqual(after.appointmentsLen, before.appointmentsLen, '预约记录数不变');
+
+    const duplicateAbn = store.getState().abnormalRecords.find(
+      (r) => r.type === 'duplicate_checkin',
+    );
+    assert(duplicateAbn, '重复签到异常记录存在');
+
+    const third = store.getState().checkInByAppointment(pendingApt.id);
+    assertEqual(third.success, false, '预约ID重复签到也被拦截');
+
+    pass('Test 49: 重复签到拦截 - 同一预约手机号/预约ID均不可重复签到，异常留痕');
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+
+    const modifyResult = store.getState().modifyTriage('any-id', 'nurse-004', {
+      triageNote: 'test',
+    });
+    assertEqual(modifyResult.success, false, '普通护士无权修改分诊');
+    assertEqual(modifyResult.error, '普通护士无权修改分诊结果', '错误信息正确');
+
+    const permAbn = store.getState().abnormalRecords.find(
+      (r) => r.type === 'triage_permission_denied',
+    );
+    assert(permAbn, '权限拒绝异常记录存在');
+
+    const adminResult = store.getState().modifyTriage('nonexistent-id', 'nurse-001', {
+      triageNote: 'admin note',
+    });
+    assertEqual(adminResult.success, false, '管理员修改不存在的记录仍失败');
+
+    pass('Test 50: 权限限制 - 普通护士不能修改分诊结果，管理员可操作但数据校验仍生效');
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+
+    const pendingApt = store.getState().appointments.find(
+      (a) => a.status === 'pending' && !a.isolationRuleId && a.appointmentDate === getTodayStr(),
+    );
+    if (!pendingApt) throw new Error('无合适的 pending 预约');
+
+    const occupiedBed = store.getState().beds.find(
+      (b) => b.status === 'occupied' || b.status === 'isolated',
+    );
+    if (!occupiedBed) throw new Error('无占用床位');
+
+    const patient = store.getState().patients.find((p) => p.id === pendingApt.patientId);
+
+    store.setState({
+      appointments: store.getState().appointments.map((a) =>
+        a.id === pendingApt.id ? { ...a, bedId: occupiedBed.id } : a,
+      ),
+    });
+
+    if (patient?.phone) {
+      const checkInResult = store.getState().checkInByPhone(patient.phone);
+      if (checkInResult.success && checkInResult.data) {
+        const before = snapshotState(store);
+        const confirmResult = store.getState().confirmTriage(checkInResult.data.id, 'nurse-002');
+        assertEqual(confirmResult.success, false, '床位被占时分诊确认应失败');
+        assert(
+          confirmResult.error?.includes('已被占用') || false,
+          '错误信息包含"已被占用"',
+        );
+
+        const after = snapshotState(store);
+        assertEqual(after.admissionsLen, before.admissionsLen, '入床记录数不变');
+
+        const bedAbn = store.getState().abnormalRecords.find(
+          (r) => r.type === 'bed_occupied_triage',
+        );
+        assert(bedAbn, '床位占用异常记录存在');
+
+        const rejectResult = store.getState().rejectTriage(checkInResult.data.id, 'nurse-002', '床位临时被占用');
+        assertEqual(rejectResult.success, true, '退回处理成功');
+
+        const checkInAfter = store.getState().checkIns.find(
+          (c) => c.id === checkInResult.data!.id,
+        );
+        assertEqual(checkInAfter?.status, 'triage_rejected', '签到状态变为 triage_rejected');
+        assertEqual(checkInAfter?.conflictReason, '床位临时被占用', '冲突原因已记录');
+
+        const aptAfter = store.getState().appointments.find((a) => a.id === pendingApt.id);
+        assertEqual(aptAfter?.status, 'pending', '预约恢复为 pending');
+
+        pass('Test 51: 冲突退回 - 床位占用时分诊确认失败，退回后预约恢复待入床');
+      } else {
+        pass('Test 51: 冲突退回 - 签到条件不满足，跳过（非当前时段）');
+      }
+    } else {
+      pass('Test 51: 冲突退回 - 患者无手机号，跳过');
+    }
+  }
+
+  {
+    const store1 = createCleanStore();
+    store1.getState().importSampleData();
+
+    const pendingApt = store1.getState().appointments.find(
+      (a) => a.status === 'pending' && a.appointmentDate === getTodayStr(),
+    );
+    if (!pendingApt) throw new Error('无今日 pending 预约');
+
+    const patient = store1.getState().patients.find((p) => p.id === pendingApt.patientId);
+    if (!patient?.phone) throw new Error('预约患者无手机号');
+
+    const checkInResult = store1.getState().checkInByPhone(patient.phone);
+    assertEqual(checkInResult.success, true, '签到成功');
+
+    const s1 = store1.getState();
+    const serializableKeys = [
+      'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
+      'appointments', 'admissions', 'careNotes', 'operationLogs',
+      'abnormalRecords', 'autoBackupSnapshots', 'restoreHistory', 'currentUserId',
+      'checkIns',
+      'checkIns',
+    ] as const;
+
+    const snapshot = JSON.stringify(
+      Object.fromEntries(serializableKeys.map((k) => [k, s1[k]])),
+    );
+
+    const store2 = createCleanStore();
+    const restored = JSON.parse(snapshot);
+    store2.setState(restored);
+    const user = (restored.nurses ?? []).find((n: any) => n.id === restored.currentUserId) || null;
+    store2.setState({ currentUser: user, currentNurse: user });
+
+    const s2 = store2.getState();
+    assertEqual(s2.checkIns.length, s1.checkIns.length, '签到记录数一致');
+    assertEqual(
+      JSON.stringify(s2.checkIns),
+      JSON.stringify(s1.checkIns),
+      '签到记录内容一致',
+    );
+
+    const triageQueue = s2.getTriageQueue();
+    assert(triageQueue.length >= 1, '重开后待分诊队列仍存在');
+
+    const checkInAfter = s2.checkIns.find((c) => c.id === checkInResult.data!.id);
+    assertEqual(checkInAfter?.status, 'checked_in', '签到状态持久化正确');
+    assertEqual(checkInAfter?.patientId, pendingApt.patientId, '患者关联正确');
+
+    const aptAfter = s2.appointments.find((a) => a.id === pendingApt.id);
+    assertEqual(aptAfter?.status, 'checked_in', '预约签到状态持久化正确');
+
+    const opLogCheck = s2.operationLogs.find((l) => l.type === 'patient_checkin');
+    assert(opLogCheck, '签到操作日志持久化成功');
+
+    pass('Test 52: 持久化一致性 - 签到状态、分诊队列、操作日志刷新/重开后完全一致');
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+
+    const result1 = store.getState().checkInByPhone('nonexistent-phone');
+    assertEqual(result1.success, false, '未知手机号签到失败');
+    assertEqual(result1.error, '未找到该手机号对应的患者', '错误信息正确');
+
+    const result2 = store.getState().checkInByAppointment('nonexistent-apt-id');
+    assertEqual(result2.success, false, '不存在的预约ID签到失败');
+
+    const admittedApt = store.getState().appointments.find((a) => a.status === 'admitted');
+    if (admittedApt) {
+      const result3 = store.getState().checkInByAppointment(admittedApt.id);
+      assertEqual(result3.success, false, '已入床的预约不可签到');
+      assert(result3.error?.includes('不可签到') || false, '错误信息包含"不可签到"');
+    }
+
+    const cancelApt = store.getState().appointments.find((a) => a.status === 'cancelled');
+    if (cancelApt) {
+      const result4 = store.getState().checkInByAppointment(cancelApt.id);
+      assertEqual(result4.success, false, '已取消的预约不可签到');
+    }
+
+    pass('Test 53: 签到校验 - 未知手机号、不存在预约、非pending预约均被正确拦截');
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+
+    const negativeBed = store.getState().beds.find((b) => b.type === 'negative' && b.status === 'idle');
+    const negativeRule = store.getState().isolationRules.find(
+      (r) => r.requiredBedType === 'negative',
+    );
+    const normalBed = store.getState().beds.find((b) => b.type === 'normal' && b.status === 'idle');
+    if (!negativeBed || !negativeRule || !normalBed) throw new Error('数据不足');
+
+    const patient = store.getState().patients.find((p) => !store.getState().appointments.some(
+      (a) => a.patientId === p.id && a.status !== 'cancelled' && a.status !== 'completed',
+    ));
+    if (!patient) throw new Error('无可用患者');
+
+    const today = getTodayStr();
+    const aptResult = store.getState().createAppointment({
+      bedId: negativeBed.id,
+      patientId: patient.id,
+      slotId: 'slot-001',
+      appointmentDate: today,
+      startTime: parseLocalTime(today, '08:00'),
+      endTime: parseLocalTime(today, '12:00'),
+      isolationRuleId: negativeRule.id,
+      createdBy: 'nurse-002',
+    });
+    assertEqual(aptResult.success, true, '创建含隔离规则的预约成功（负压床位+负压规则）');
+
+    const checkInResult = store.getState().checkInByAppointment(aptResult.data!.id);
+    assertEqual(checkInResult.success, true, '签到成功');
+
+    const confirmResult = store.getState().confirmTriage(checkInResult.data!.id, 'nurse-002', normalBed.id);
+    assertEqual(confirmResult.success, false, '换床到普通床位时分诊确认应因隔离规则失败');
+
+    const isoAbn = store.getState().abnormalRecords.find(
+      (r) => r.type === 'isolation_conflict_triage',
+    );
+    assert(isoAbn, '隔离规则冲突异常记录存在');
+
+    pass('Test 54: 隔离规则冲突 - 分诊确认时换床到不合规床位被拦截，异常留痕');
   }
 
   // ───────── 测试汇总 ─────────

@@ -40,7 +40,7 @@ import {
   Info,
   ClockArrowUp,
   ChevronRight,
-  ChevronDown,
+  XCircle,
   History as HistoryIcon,
   Shield,
 } from 'lucide-react';
@@ -1971,7 +1971,7 @@ function DataTab() {
       )}
 
       {showHistoryModal && (
-        <Modal title="恢复与回滚历史记录" onClose={() => setShowHistoryModal(false)} size="lg">
+        <Modal title="恢复与回滚历史记录" onClose={() => setShowHistoryModal(false)}>
           <div className="space-y-4 max-h-[70vh] overflow-y-auto">
             {restoreHistory.length === 0 ? (
               <div className="text-center py-12 text-gray-400">

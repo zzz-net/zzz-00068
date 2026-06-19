@@ -5,6 +5,7 @@ import Login from "@/pages/Login"
 import Dashboard from "@/pages/Dashboard"
 import Appointments from "@/pages/Appointments"
 import NewAppointment from "@/pages/NewAppointment"
+import TriageQueue from "@/pages/TriageQueue"
 import Config from "@/pages/Config"
 import History from "@/pages/History"
 import NotFound from "@/pages/NotFound"
@@ -53,6 +54,16 @@ export default function App() {
               <RequireAuth>
                 <Layout>
                   <NewAppointment />
+                </Layout>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/triage"
+            element={
+              <RequireAuth>
+                <Layout>
+                  <TriageQueue />
                 </Layout>
               </RequireAuth>
             }

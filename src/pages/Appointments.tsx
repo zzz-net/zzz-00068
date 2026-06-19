@@ -13,6 +13,7 @@ import {
   Eye,
   XCircle,
   CheckCircle2,
+  ClipboardCheck,
   ClipboardList,
   LayoutGrid,
   Settings,
@@ -112,6 +113,7 @@ export default function Appointments() {
   const stats = useMemo(() => {
     return {
       pending: appointments.filter((a) => a.status === 'pending').length,
+      checked_in: appointments.filter((a) => a.status === 'checked_in').length,
       admitted: appointments.filter((a) => a.status === 'admitted').length,
       completed: appointments.filter((a) => a.status === 'completed').length,
       cancelled: appointments.filter((a) => a.status === 'cancelled').length,
@@ -195,8 +197,9 @@ export default function Appointments() {
       </header>
 
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-6">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 mb-6">
           <MiniStatCard label="待入床" value={stats.pending} color="yellow" />
+          <MiniStatCard label="已签到" value={stats.checked_in} color="cyan" />
           <MiniStatCard label="已入床" value={stats.admitted} color="blue" />
           <MiniStatCard label="已完成" value={stats.completed} color="green" />
           <MiniStatCard label="已取消" value={stats.cancelled} color="gray" />
@@ -229,6 +232,7 @@ export default function Appointments() {
               >
                 <option value="all">全部状态</option>
                 <option value="pending">待入床</option>
+                <option value="checked_in">已签到</option>
                 <option value="admitted">已入床</option>
                 <option value="completed">已完成</option>
                 <option value="cancelled">已取消</option>
@@ -359,6 +363,15 @@ export default function Appointments() {
                                 确认入床
                               </button>
                             )}
+                            {apt.status === 'checked_in' && (
+                              <button
+                                onClick={() => navigate('/triage')}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 bg-cyan-600 text-white rounded-lg text-xs font-medium hover:bg-cyan-700 transition-colors"
+                              >
+                                <ClipboardCheck className="w-3.5 h-3.5" />
+                                前往分诊
+                              </button>
+                            )}
                             {apt.status === 'admitted' && (
                               <button
                                 onClick={() => navigate('/dashboard')}
@@ -428,12 +441,13 @@ export default function Appointments() {
 interface MiniStatCardProps {
   label: string;
   value: number;
-  color: 'yellow' | 'blue' | 'green' | 'gray';
+  color: 'yellow' | 'cyan' | 'blue' | 'green' | 'gray';
 }
 
 function MiniStatCard({ label, value, color }: MiniStatCardProps) {
   const classes = {
     yellow: 'bg-yellow-50 border-yellow-100 text-yellow-700',
+    cyan: 'bg-cyan-50 border-cyan-100 text-cyan-700',
     blue: 'bg-blue-50 border-blue-100 text-blue-700',
     green: 'bg-green-50 border-green-100 text-green-700',
     gray: 'bg-gray-50 border-gray-100 text-gray-600',
