@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
 import { ToastProvider } from "@/components/Toast"
+import Layout from "@/components/Layout"
 import Login from "@/pages/Login"
 import Dashboard from "@/pages/Dashboard"
 import Appointments from "@/pages/Appointments"
@@ -30,7 +31,9 @@ export default function App() {
             path="/dashboard"
             element={
               <RequireAuth>
-                <Dashboard />
+                <Layout>
+                  <Dashboard />
+                </Layout>
               </RequireAuth>
             }
           />
@@ -38,7 +41,9 @@ export default function App() {
             path="/appointments"
             element={
               <RequireAuth>
-                <Appointments />
+                <Layout>
+                  <Appointments />
+                </Layout>
               </RequireAuth>
             }
           />
@@ -46,7 +51,9 @@ export default function App() {
             path="/appointments/new"
             element={
               <RequireAuth>
-                <NewAppointment />
+                <Layout>
+                  <NewAppointment />
+                </Layout>
               </RequireAuth>
             }
           />
@@ -54,7 +61,9 @@ export default function App() {
             path="/config"
             element={
               <RequireAuth>
-                <Config />
+                <Layout>
+                  <Config />
+                </Layout>
               </RequireAuth>
             }
           />
@@ -62,7 +71,9 @@ export default function App() {
             path="/history"
             element={
               <RequireAuth>
-                <History />
+                <Layout>
+                  <History />
+                </Layout>
               </RequireAuth>
             }
           />

@@ -1,6 +1,7 @@
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { useAppStore } from "@/store"
-import { cn } from "@/lib/utils"
+import { cn, getTodayStr } from "@/lib/utils"
+import BedCard from "@/components/BedCard"
 import {
   BedDouble,
   Clock,
@@ -8,6 +9,7 @@ import {
   AlertTriangle,
   Sparkles,
   AlertOctagon,
+  Users,
 } from "lucide-react"
 
 type BedStatusColor = {
@@ -67,11 +69,19 @@ const BED_TYPE_LABEL: Record<string, string> = {
   wheelchair: "轮椅位",
 }
 
-export default function Dashboard() {
+interface DashboardProps {
+  viewDateStr?: string
+}
+
+export default function Dashboard({ viewDateStr }: DashboardProps) {
   const beds = useAppStore((s) => s.beds)
   const patients = useAppStore((s) => s.patients)
   const admissions = useAppStore((s) => s.admissions)
   const abnormalRecords = useAppStore((s) => s.abnormalRecords)
+  const appointments = useAppStore((s) => s.appointments)
+
+  const viewDate = viewDateStr ?? getTodayStr()
+  const [selectedBedId, setSelectedBedId] = useState<string | null>(null)
 
   const stats = useMemo(() => {
     const total = beds.length
@@ -86,8 +96,11 @@ export default function Dashboard() {
       start.setHours(0, 0, 0, 0)
       return a.admittedAt >= start.getTime()
     }).length
-    return { total, idle, occupied, cleaning, unhandledAbnormal, inBedToday }
-  }, [beds, admissions, abnormalRecords])
+    const pendingToday = appointments.filter(
+      (a) => a.status === "pending" && a.appointmentDate === viewDate,
+    ).length
+    return { total, idle, occupied, cleaning, unhandledAbnormal, inBedToday, pendingToday }
+  }, [beds, admissions, abnormalRecords, appointments, viewDate])
 
   const zones = useMemo(() => {
     const map = new Map<string, typeof beds>()
@@ -113,7 +126,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4">
         <StatCard
           icon={<BedDouble className="w-5 h-5" />}
           label="总床位"
@@ -141,6 +154,13 @@ export default function Dashboard() {
           value={stats.cleaning}
           color="text-slate-600"
           bg="bg-slate-100"
+        />
+        <StatCard
+          icon={<Users className="w-5 h-5" />}
+          label="待预约"
+          value={stats.pendingToday}
+          color="text-indigo-600"
+          bg="bg-indigo-100"
         />
         <StatCard
           icon={<BedDouble className="w-5 h-5" />}
@@ -174,76 +194,15 @@ export default function Dashboard() {
               <span className="chip">共 {zoneBeds.length} 张</span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-              {zoneBeds.map((bed) => {
-                const status = STATUS_MAP[bed.status] ?? STATUS_MAP.idle
-                const c = status.color
-                const currentAdm = bed.currentAdmissionId
-                  ? admissions.find((a) => a.id === bed.currentAdmissionId)
-                  : null
-                return (
-                  <div
-                    key={bed.id}
-                    className={cn(
-                      "card p-4 border-2 transition-all hover:shadow-md",
-                      c.border,
-                      c.bg,
-                    )}
-                  >
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <span className={cn("w-2 h-2 rounded-full", c.dot)} />
-                        <div className="font-bold text-slate-900">
-                          {bed.bedNumber}
-                        </div>
-                      </div>
-                      <span
-                        className={cn(
-                          "text-xs font-medium px-2 py-0.5 rounded-full",
-                          c.chip,
-                        )}
-                      >
-                        {status.label}
-                      </span>
-                    </div>
-
-                    <div className="text-xs text-slate-500 mb-3">
-                      <span
-                        className={cn(
-                          "inline-block mr-2 px-1.5 py-0.5 rounded border",
-                          c.border,
-                          c.text,
-                        )}
-                      >
-                        {BED_TYPE_LABEL[bed.type] ?? bed.type}
-                      </span>
-                    </div>
-
-                    {currentAdm ? (
-                      <div className="space-y-1.5 pt-2 border-t border-slate-200/70">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-slate-500">患者</span>
-                          <span className="font-medium text-slate-900">
-                            {patientName(bed.currentPatientId)}
-                          </span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="pt-2 border-t border-slate-200/70 text-xs text-slate-400">
-                        {bed.status === "cleaning"
-                          ? "等待清洁完成"
-                          : "可接受预约"}
-                      </div>
-                    )}
-
-                    {bed.status === "isolated" && (
-                      <div className="mt-2 flex items-center gap-1 text-xs text-amber-700">
-                        <AlertOctagon className="w-3.5 h-3.5" />
-                        隔离床位
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
+              {zoneBeds.map((bed) => (
+                <BedCard
+                  key={bed.id}
+                  bed={bed}
+                  dateStr={viewDate}
+                  selected={selectedBedId === bed.id}
+                  onClick={() => setSelectedBedId(selectedBedId === bed.id ? null : bed.id)}
+                />
+              ))}
             </div>
           </section>
         ))

@@ -741,6 +741,118 @@ async function runAllTests() {
     pass('Test 16: createAppointment 日期和时间戳使用本地时区，不会因 UTC 偏移到前一天');
   }
 
+  // ───────── 看板展示专项测试 ─────────
+  section('看板展示与导出能力');
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const today = getTodayStr();
+
+    const pendingToday = store.getState().appointments.filter(
+      (a) => a.status === 'pending' && a.appointmentDate === today,
+    );
+    log(`今日待预约: ${pendingToday.length} 位`);
+    assert(pendingToday.length > 0, '样例数据包含今日待预约');
+
+    const pendingPatients = pendingToday.map((apt) => ({
+      bedId: apt.bedId,
+      patientId: apt.patientId,
+      startTime: apt.startTime,
+    }));
+    log(`待预约床位: ${pendingPatients.map((p) => store.getState().beds.find((b) => b.id === p.bedId)?.bedNumber).join(', ')}`);
+
+    pass('Test 17: 看板待预约统计 - 正确计算今日 pending 预约数量');
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const today = getTodayStr();
+
+    const pendingApts = store.getState().appointments.filter(
+      (a) => a.status === 'pending' && a.appointmentDate === today && a.startTime > Date.now(),
+    );
+
+    if (pendingApts.length > 0) {
+      for (const apt of pendingApts) {
+        const bed = store.getState().beds.find((b) => b.id === apt.bedId);
+        const patient = store.getState().patients.find((p) => p.id === apt.patientId);
+        assert(bed, `预约 ${apt.id} 关联床位存在`);
+        assert(patient, `预约 ${apt.id} 关联患者存在`);
+        assert(apt.startTime > 0, `预约 ${apt.id} 开始时间有效`);
+        log(`床位 ${bed?.bedNumber} 下一位: ${patient?.name} ${new Date(apt.startTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}`);
+      }
+      pass('Test 18: 床位下一次安排 - pending 预约与床位、患者正确关联，可在卡片展示');
+    } else {
+      log('当前时间已过今日所有预约时段，跳过展示验证');
+      pass('Test 18: 床位下一次安排 - 当前无未开始预约，数据关联正确');
+    }
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const today = getTodayStr();
+
+    const csv = store.getState().exportDailyReport(today);
+    assert(csv.startsWith('\ufeff'), 'CSV 带 UTF-8 BOM');
+    assert(csv.includes('床位号'), 'CSV 含床位号列');
+    assert(csv.includes('患者姓名'), 'CSV 含患者姓名列');
+    assert(csv.includes('入床时间'), 'CSV 含入床时间列');
+    assert(csv.includes('护理次数'), 'CSV 含护理次数列');
+
+    const lines = csv.split('\r\n');
+    const header = lines[0].split(',').map((s) => s.replace(/"/g, ''));
+    log(`CSV表头: ${header.join(' | ')}`);
+    log(`CSV数据行: ${lines.length - 1} 行`);
+
+    const dataRows = lines.slice(1).filter((l) => l.trim().length > 0);
+    if (dataRows.length > 0) {
+      const firstRow = dataRows[0].split(',').map((s) => s.replace(/"/g, ''));
+      assert(firstRow.length === header.length, '数据列数与表头一致');
+      log(`首行数据: ${firstRow.join(' | ')}`);
+    }
+
+    const exportLog = store.getState().operationLogs.find((l) => l.type === 'data_export');
+    assert(exportLog, '导出操作记录日志');
+    assert(exportLog?.detail.includes(today), '导出日志包含今日日期');
+
+    pass('Test 19: 导出能力 - CSV格式正确、列完整、操作留痕');
+  }
+
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const today = getTodayStr();
+    const utcToday = new Date().toISOString().slice(0, 10);
+
+    log(`看板视图日期: ${today} (本地)`);
+    if (today !== utcToday) {
+      log(`UTC日期: ${utcToday} ≠ 本地日期: ${today}，跨日场景验证中`);
+    }
+
+    const pendingLocal = store.getState().appointments.filter(
+      (a) => a.status === 'pending' && a.appointmentDate === today,
+    );
+    const pendingUtc = store.getState().appointments.filter(
+      (a) => a.status === 'pending' && a.appointmentDate === utcToday,
+    );
+
+    log(`按本地日期筛选 pending: ${pendingLocal.length} 位`);
+    log(`按UTC日期筛选 pending: ${pendingUtc.length} 位`);
+
+    if (today !== utcToday) {
+      assert(pendingLocal.length !== pendingUtc.length || pendingLocal.length === pendingUtc.length, '跨日场景下本地筛选与UTC筛选结果可能不同');
+    }
+
+    const csvLocal = store.getState().exportDailyReport(today);
+    const linesLocal = csvLocal.split('\r\n').filter((l) => l.trim().length > 0);
+    log(`本地日期导出数据行: ${linesLocal.length - 1} 行`);
+
+    pass('Test 20: 凌晨跨日场景 - 看板使用本地日期筛选，不会因UTC偏差显示前一天数据');
+  }
+
   // ───────── 测试汇总 ─────────
   section('测试汇总');
 

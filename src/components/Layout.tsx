@@ -15,6 +15,7 @@ import type { NurseRole } from '@/types';
 import { useAppStore } from '@/store';
 import { RoleGate } from '@/components/RoleGate';
 import { showToast } from '@/components/Toast';
+import { getTodayStr, addDaysStr } from '@/lib/utils';
 
 interface LayoutProps {
   children: ReactNode;
@@ -62,6 +63,11 @@ function toISO(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+function dateStrToDate(dateStr: string): Date {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
 export function Layout({ children }: LayoutProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -69,7 +75,7 @@ export function Layout({ children }: LayoutProps) {
   const logout = useAppStore((s) => s.logout);
   const exportDailyReport = useAppStore((s) => s.exportDailyReport);
 
-  const [viewDate, setViewDate] = useState<Date>(new Date());
+  const [viewDateStr, setViewDateStr] = useState<string>(getTodayStr());
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
@@ -123,24 +129,20 @@ export function Layout({ children }: LayoutProps) {
   }, [location.pathname]);
 
   const handlePrevDay = () => {
-    const d = new Date(viewDate);
-    d.setDate(d.getDate() - 1);
-    setViewDate(d);
+    setViewDateStr(addDaysStr(viewDateStr, -1));
   };
 
   const handleNextDay = () => {
-    const d = new Date(viewDate);
-    d.setDate(d.getDate() + 1);
-    setViewDate(d);
+    setViewDateStr(addDaysStr(viewDateStr, 1));
   };
 
   const handleToday = () => {
-    setViewDate(new Date());
+    setViewDateStr(getTodayStr());
   };
 
   const handleExport = () => {
     try {
-      const dateStr = toISO(viewDate);
+      const dateStr = viewDateStr;
       const csv = exportDailyReport(dateStr);
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
@@ -165,7 +167,8 @@ export function Layout({ children }: LayoutProps) {
 
   if (!currentUser) return null;
 
-  const isToday = toISO(viewDate) === toISO(new Date());
+  const isToday = viewDateStr === getTodayStr();
+  const viewDate = dateStrToDate(viewDateStr);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -316,7 +319,14 @@ export function Layout({ children }: LayoutProps) {
       </header>
 
       <main className="ml-60 mt-16 p-6 min-h-screen bg-slate-50">
-        <div className="max-w-screen-2xl mx-auto">{children}</div>
+        <div className="max-w-screen-2xl mx-auto">
+          {children && typeof children === 'object' && 'type' in children
+            ? {
+                ...children,
+                props: { ...children.props, viewDateStr },
+              }
+            : children}
+        </div>
       </main>
 
       <style>{`
