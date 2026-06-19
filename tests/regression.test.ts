@@ -1174,8 +1174,11 @@ async function runAllTests() {
 
     assert(restoreResult.success === true, '恢复成功');
     assert(restoreResult.snapshotId !== undefined, '返回快照ID');
+    assert(restoreResult.adminSessionPreserved === true, '恢复后管理员会话保持');
     assert(store.getState().beds.length === originalBedCount, '恢复后床位数量回到原值');
     assert(store.getState().autoBackupSnapshots.length === beforeRestoreSnapshot + 1, '恢复前创建了自动快照');
+    assert(store.getState().currentUser?.id === 'nurse-001', '恢复后管理员仍在登录状态');
+    assert(store.getState().currentUser?.role === 'admin', '恢复后管理员角色保留');
 
     const restoreLog = store.getState().operationLogs.find((l) => l.type === 'backup_restore');
     assert(restoreLog, '恢复操作记录日志');
@@ -1189,17 +1192,17 @@ async function runAllTests() {
     assert(latestSnapshot?.name.includes('恢复前自动备份'), '快照名称正确');
     assert(latestSnapshot?.data.beds.length === originalBedCount + 2, '快照保存了修改后的数据');
 
-    store.getState().login('nurse-001', '123456');
-
     const rollbackResult = store.getState().rollbackRestore(latestSnapshot!.id);
     assert(rollbackResult.success === true, '回滚成功');
+    assert(rollbackResult.adminSessionPreserved === true, '回滚后管理员会话保持');
     assert(store.getState().beds.length === originalBedCount + 2, '回滚后床位数量恢复到修改后的值');
+    assert(store.getState().currentUser?.id === 'nurse-001', '回滚后管理员仍在登录状态');
 
     const rollbackLog = store.getState().operationLogs.find((l) => l.type === 'backup_restore_rollback');
     assert(rollbackLog, '回滚操作记录日志');
     assert(rollbackLog?.detail.includes(latestSnapshot!.id), '回滚日志包含快照ID');
 
-    pass('Test 33: 完整流程 - 导出→改数据→恢复→回退，全部成功且留痕');
+    pass('Test 33: 完整流程 - 导出→改数据→恢复→回退，全部成功且留痕，管理员会话全程保持');
   }
 
   // 测试34: 恢复执行 - 冲突文件被拒绝（不创建快照）
@@ -1299,14 +1302,17 @@ async function runAllTests() {
 
     const backup = store.getState().exportBackup();
     store.getState().previewRestore(backup);
-    store.getState().executeRestore(backup);
+    const restoreResult = store.getState().executeRestore(backup);
 
-    store.getState().login('nurse-001', '123456');
+    assert(restoreResult.adminSessionPreserved === true, '恢复后管理员会话保持');
+    assert(store.getState().currentUser?.id === 'nurse-001', '恢复后无需重新登录');
 
     const latestSnapshot = store.getState().getLatestSnapshot();
     assert(latestSnapshot !== null, '存在最新快照');
 
-    store.getState().rollbackRestore(latestSnapshot!.id);
+    const rollbackResult = store.getState().rollbackRestore(latestSnapshot!.id);
+    assert(rollbackResult.adminSessionPreserved === true, '回滚后管理员会话保持');
+    assert(store.getState().currentUser?.id === 'nurse-001', '回滚后仍在登录状态');
 
     const logTypes = store.getState().operationLogs.map((l) => l.type);
     assert(logTypes.includes('backup_export'), '包含 backup_export 日志');
@@ -1321,7 +1327,7 @@ async function runAllTests() {
     assert(restoreOp?.targetType === 'system', '目标类型正确');
     assert(restoreOp?.isAbnormal === false, '正常操作不标记异常');
 
-    pass('Test 39: 历史页留痕 - 所有备份恢复操作完整记录，可在历史页查看');
+    pass('Test 39: 历史页留痕 - 所有备份恢复操作完整记录，可在历史页查看，会话全程保持');
   }
 
   // 测试40: 持久化一致性 - 快照和日志刷新后仍在
@@ -1331,9 +1337,14 @@ async function runAllTests() {
     store1.getState().login('nurse-001', '123456');
 
     const backup = store1.getState().exportBackup();
-    store1.getState().executeRestore(backup);
+    const restoreResult = store1.getState().executeRestore(backup);
 
     const s1 = store1.getState();
+    assert(s1.currentUserId === 'nurse-001', '恢复后 currentUserId 保持');
+    assert(s1.currentUser?.id === 'nurse-001', '恢复后 currentUser 保持');
+    assert(s1.currentUser?.role === 'admin', '恢复后管理员角色保持');
+    assert(restoreResult.adminSessionPreserved === true, '返回值标识会话已保留');
+
     const serializableKeys = [
       'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
       'appointments', 'admissions', 'careNotes', 'operationLogs',
@@ -1362,8 +1373,15 @@ async function runAllTests() {
 
     assert(s2.autoBackupSnapshots.length > 0, 'autoBackupSnapshots 持久化成功');
     assert(s2.operationLogs.some((l) => l.type === 'backup_restore'), '备份恢复日志持久化成功');
+    assert(s2.currentUserId === 'nurse-001', '刷新后 currentUserId 仍在');
+    assert(s2.currentUser?.id === 'nurse-001', '刷新后 currentUser 仍在');
+    assert(s2.currentUser?.role === 'admin', '刷新后管理员角色仍在');
 
-    pass('Test 40: 持久化一致性 - 快照和日志刷新/重开后仍然存在');
+    const rollbackResult = s2.rollbackRestore(s2.getLatestSnapshot()!.id);
+    assert(rollbackResult.success === true, '刷新后仍可直接回滚（无需重新登录）');
+    assert(rollbackResult.adminSessionPreserved === true, '回滚后会话仍保持');
+
+    pass('Test 40: 持久化一致性 - 快照、日志、管理员会话刷新/重开后仍然存在');
   }
 
   // ───────── 测试汇总 ─────────

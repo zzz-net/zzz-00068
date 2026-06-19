@@ -1316,9 +1316,14 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const snapshot = state.createAutoSnapshot('恢复前自动备份');
 
       const data = backupFile.data;
+      const newNurses = JSON.parse(JSON.stringify(data.nurses ?? []));
+      const adminStillExists = newNurses.find(
+        (n: Nurse) => n.id === currentUser.id && n.role === 'admin',
+      );
+
       set({
         beds: JSON.parse(JSON.stringify(data.beds ?? [])),
-        nurses: JSON.parse(JSON.stringify(data.nurses ?? [])),
+        nurses: newNurses,
         isolationRules: JSON.parse(JSON.stringify(data.isolationRules ?? [])),
         timeSlots: JSON.parse(JSON.stringify(data.timeSlots ?? [])),
         patients: JSON.parse(JSON.stringify(data.patients ?? [])),
@@ -1326,9 +1331,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         admissions: JSON.parse(JSON.stringify(data.admissions ?? [])),
         careNotes: JSON.parse(JSON.stringify(data.careNotes ?? [])),
         abnormalRecords: JSON.parse(JSON.stringify(data.abnormalRecords ?? [])),
-        currentUserId: null,
-        currentUser: null,
-        currentNurse: null,
+        currentUserId: adminStillExists ? currentUser.id : null,
+        currentUser: adminStillExists ? adminStillExists : null,
+        currentNurse: adminStillExists ? adminStillExists : null,
       });
 
       const newState = get();
@@ -1352,6 +1357,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         success: true,
         message: '数据恢复成功',
         snapshotId: snapshot.id,
+        adminSessionPreserved: !!adminStillExists,
       };
     },
 
@@ -1379,9 +1385,14 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const beforeRollbackSnapshot = state.createAutoSnapshot('回滚前自动备份');
 
       const data = snapshot.data;
+      const newNurses = JSON.parse(JSON.stringify(data.nurses ?? []));
+      const adminStillExists = newNurses.find(
+        (n: Nurse) => n.id === currentUser.id && n.role === 'admin',
+      );
+
       set({
         beds: JSON.parse(JSON.stringify(data.beds ?? [])),
-        nurses: JSON.parse(JSON.stringify(data.nurses ?? [])),
+        nurses: newNurses,
         isolationRules: JSON.parse(JSON.stringify(data.isolationRules ?? [])),
         timeSlots: JSON.parse(JSON.stringify(data.timeSlots ?? [])),
         patients: JSON.parse(JSON.stringify(data.patients ?? [])),
@@ -1389,9 +1400,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         admissions: JSON.parse(JSON.stringify(data.admissions ?? [])),
         careNotes: JSON.parse(JSON.stringify(data.careNotes ?? [])),
         abnormalRecords: JSON.parse(JSON.stringify(data.abnormalRecords ?? [])),
-        currentUserId: null,
-        currentUser: null,
-        currentNurse: null,
+        currentUserId: adminStillExists ? currentUser.id : null,
+        currentUser: adminStillExists ? adminStillExists : null,
+        currentNurse: adminStillExists ? adminStillExists : null,
       });
 
       const newState = get();
@@ -1412,6 +1423,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       return {
         success: true,
         message: '数据回滚成功',
+        adminSessionPreserved: !!adminStillExists,
       };
     },
 

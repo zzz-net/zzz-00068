@@ -1051,7 +1051,9 @@ function DataTab() {
         setShowPreviewModal(false);
         setPendingBackupFile(null);
         setRestorePreview(null);
-        setTimeout(() => window.location.reload(), 1500);
+        if (!result.adminSessionPreserved) {
+          setTimeout(() => window.location.reload(), 1500);
+        }
       } else {
         showToast(result.message, 'error');
       }
@@ -1081,7 +1083,9 @@ function DataTab() {
         showToast(result.message, 'success');
         setShowRollbackModal(false);
         setSelectedSnapshot(null);
-        setTimeout(() => window.location.reload(), 1500);
+        if (!result.adminSessionPreserved) {
+          setTimeout(() => window.location.reload(), 1500);
+        }
       } else {
         showToast(result.message, 'error');
       }

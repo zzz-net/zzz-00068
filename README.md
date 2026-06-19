@@ -34,7 +34,7 @@ npm run preview   # 预览构建产物
 npm run check
 ```
 
-> 启动后浏览器会自动打开 http://localhost:5173，首次进入见下方「首次使用」。
+> 启动后请在浏览器中手动打开 http://localhost:5173，首次进入见下方「首次使用」。
 
 ---
 

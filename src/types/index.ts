@@ -262,10 +262,12 @@ export interface RestoreResult {
   message: string;
   snapshotId?: string;
   error?: string;
+  adminSessionPreserved?: boolean;
 }
 
 export interface RollbackResult {
   success: boolean;
   message: string;
   error?: string;
+  adminSessionPreserved?: boolean;
 }
