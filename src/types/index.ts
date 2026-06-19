@@ -271,3 +271,55 @@ export interface RollbackResult {
   error?: string;
   adminSessionPreserved?: boolean;
 }
+
+export type RestoreOperationType = 'restore' | 'rollback';
+
+export type RestoreOperationStatus = 'success' | 'failed';
+
+export interface EntityChangeItem {
+  id: string;
+  name: string;
+  changeType: 'added' | 'updated' | 'deleted';
+  before?: any;
+  after?: any;
+  diffFields?: Array<{ field: string; before: any; after: any }>;
+}
+
+export interface EntityChanges {
+  added: EntityChangeItem[];
+  updated: EntityChangeItem[];
+  deleted: EntityChangeItem[];
+}
+
+export interface RestoreDetailedDiff {
+  beds: EntityChanges;
+  nurses: EntityChanges;
+  isolationRules: EntityChanges;
+  timeSlots: EntityChanges;
+  patients: EntityChanges;
+  appointments: EntityChanges;
+  admissions: EntityChanges;
+  careNotes: EntityChanges;
+  operationLogs: EntityChanges;
+  abnormalRecords: EntityChanges;
+}
+
+export interface RestoreHistoryRecord {
+  id: string;
+  operationType: RestoreOperationType;
+  status: RestoreOperationStatus;
+  operatorId: string;
+  operatorName: string;
+  timestamp: number;
+  backupVersion?: string;
+  backupExportedAt?: string;
+  snapshotId?: string;
+  snapshotName?: string;
+  rollbackSnapshotId?: string;
+  rollbackSnapshotName?: string;
+  message: string;
+  error?: string;
+  dataOverview: Record<BackupRestoreEntity, number>;
+  diff: RestoreDiff;
+  detailedDiff: RestoreDetailedDiff;
+}

@@ -4,7 +4,7 @@ import { useAppStore } from '@/store';
 import { useToastStore } from '@/store/toast';
 import RoleGate from '@/components/RoleGate';
 import StatusBadge from '@/components/StatusBadge';
-import type { BedType, NurseRole, BedStatus, BackupFile, RestorePreview, AutoBackupSnapshot } from '@/types';
+import type { BedType, NurseRole, BedStatus, BackupFile, RestorePreview, AutoBackupSnapshot, RestoreHistoryRecord, BackupRestoreEntity, EntityChanges, EntityChangeItem } from '@/types';
 import {
   LayoutGrid,
   ClipboardList,
@@ -39,6 +39,10 @@ import {
   CheckCircle2,
   Info,
   ClockArrowUp,
+  ChevronRight,
+  ChevronDown,
+  History as HistoryIcon,
+  Shield,
 } from 'lucide-react';
 import { cn, getTodayStr } from '@/lib/utils';
 
@@ -46,7 +50,7 @@ type ConfigTab = 'beds' | 'isolation' | 'timeslots' | 'nurses' | 'data';
 
 export default function Config() {
   return (
-    <RoleGate allowed={['admin']}>
+    <RoleGate allowed={['admin', 'senior', 'normal']}>
       <ConfigContent />
     </RoleGate>
   );
@@ -163,10 +167,50 @@ function ConfigContent() {
           })}
         </div>
 
-        {tab === 'beds' && <BedsTab />}
-        {tab === 'isolation' && <IsolationTab />}
-        {tab === 'timeslots' && <TimeSlotsTab />}
-        {tab === 'nurses' && <NursesTab />}
+        {tab === 'beds' && (
+          <RoleGate allowed={['admin']} fallback={
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-12 text-center">
+              <Shield className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500 font-medium">权限不足</p>
+              <p className="text-sm text-gray-400 mt-1">只有管理员可以管理床位配置</p>
+            </div>
+          }>
+            <BedsTab />
+          </RoleGate>
+        )}
+        {tab === 'isolation' && (
+          <RoleGate allowed={['admin']} fallback={
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-12 text-center">
+              <Shield className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500 font-medium">权限不足</p>
+              <p className="text-sm text-gray-400 mt-1">只有管理员可以管理隔离规则</p>
+            </div>
+          }>
+            <IsolationTab />
+          </RoleGate>
+        )}
+        {tab === 'timeslots' && (
+          <RoleGate allowed={['admin']} fallback={
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-12 text-center">
+              <Shield className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500 font-medium">权限不足</p>
+              <p className="text-sm text-gray-400 mt-1">只有管理员可以管理时段配置</p>
+            </div>
+          }>
+            <TimeSlotsTab />
+          </RoleGate>
+        )}
+        {tab === 'nurses' && (
+          <RoleGate allowed={['admin']} fallback={
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-12 text-center">
+              <Shield className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500 font-medium">权限不足</p>
+              <p className="text-sm text-gray-400 mt-1">只有管理员可以管理护士角色</p>
+            </div>
+          }>
+            <NursesTab />
+          </RoleGate>
+        )}
         {tab === 'data' && <DataTab />}
       </main>
     </div>
@@ -956,14 +1000,296 @@ function NursesTab() {
   );
 }
 
+function EntityDiffAccordion({
+  entityKey,
+  entityLabel,
+  changes,
+  color = 'blue',
+}: {
+  entityKey: BackupRestoreEntity;
+  entityLabel: string;
+  changes: EntityChanges;
+  color?: 'blue' | 'green' | 'amber' | 'red' | 'purple';
+}) {
+  const [open, setOpen] = useState(false);
+  const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
+
+  const totalChanges = changes.added.length + changes.updated.length + changes.deleted.length;
+  if (totalChanges === 0) return null;
+
+  const colorMap: Record<string, { bg: string; border: string; text: string }> = {
+    blue: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700' },
+    green: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700' },
+    amber: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700' },
+    red: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700' },
+    purple: { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700' },
+  };
+  const c = colorMap[color];
+
+  const formatValue = (v: any): string => {
+    if (v === null || v === undefined) return '—';
+    if (typeof v === 'object') return JSON.stringify(v, null, 0);
+    if (typeof v === 'boolean') return v ? '是' : '否';
+    if (typeof v === 'number') {
+      if (v > 1000000000000) return new Date(v).toLocaleString('zh-CN', { hour12: false });
+      return String(v);
+    }
+    return String(v);
+  };
+
+  const renderChangeItem = (item: EntityChangeItem, type: 'added' | 'updated' | 'deleted') => {
+    const isExpanded = expandedItemId === `${type}-${item.id}`;
+    const typeConfig = {
+      added: { badge: 'bg-green-100 text-green-700 border-green-200', label: '新增' },
+      updated: { badge: 'bg-blue-100 text-blue-700 border-blue-200', label: '修改' },
+      deleted: { badge: 'bg-red-100 text-red-700 border-red-200', label: '删除' },
+    };
+    const tc = typeConfig[type];
+
+    return (
+      <div key={`${type}-${item.id}`} className="border border-gray-100 rounded-lg overflow-hidden">
+        <button
+          onClick={() => setExpandedItemId(isExpanded ? null : `${type}-${item.id}`)}
+          className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-50 transition-colors text-left"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold border ${tc.badge} flex-shrink-0`}>
+              {tc.label}
+            </span>
+            <span className="text-sm font-medium text-gray-800 truncate">{item.name}</span>
+          </div>
+          {isExpanded ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+        </button>
+        {isExpanded && (
+          <div className="border-t border-gray-100 bg-gray-50/50 p-3 text-xs space-y-2">
+            {type === 'added' && item.after && (
+              <div className="space-y-1">
+                <p className="text-[10px] font-semibold text-gray-500 uppercase">新增内容</p>
+                <div className="bg-white rounded border border-green-100 p-2 overflow-x-auto">
+                  {Object.entries(item.after).map(([k, v]) => (
+                    <div key={k} className="flex gap-2 py-0.5">
+                      <span className="text-gray-500 font-medium min-w-[100px]">{k}:</span>
+                      <span className="text-green-700 break-all">{formatValue(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {type === 'deleted' && item.before && (
+              <div className="space-y-1">
+                <p className="text-[10px] font-semibold text-gray-500 uppercase">删除前内容</p>
+                <div className="bg-white rounded border border-red-100 p-2 overflow-x-auto">
+                  {Object.entries(item.before).map(([k, v]) => (
+                    <div key={k} className="flex gap-2 py-0.5">
+                      <span className="text-gray-500 font-medium min-w-[100px]">{k}:</span>
+                      <span className="text-red-700 line-through break-all">{formatValue(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {type === 'updated' && item.diffFields && item.diffFields.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-[10px] font-semibold text-gray-500 uppercase">变更字段</p>
+                <div className="space-y-1">
+                  {item.diffFields.map((df, idx) => (
+                    <div key={idx} className="bg-white rounded border border-gray-100 p-2">
+                      <div className="font-medium text-gray-700 mb-1">{df.field}</div>
+                      <div className="flex gap-3">
+                        <div className="flex-1">
+                          <span className="text-[10px] text-gray-400 block">变更前</span>
+                          <span className="text-red-600 line-through break-all">{formatValue(df.before)}</span>
+                        </div>
+                        <div className="flex-1">
+                          <span className="text-[10px] text-gray-400 block">变更后</span>
+                          <span className="text-green-600 break-all">{formatValue(df.after)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className={`rounded-xl border ${c.border} ${c.bg} overflow-hidden`}>
+      <button
+        onClick={() => setOpen(!open)}
+        className={`w-full flex items-center justify-between px-4 py-3 ${c.text} hover:bg-white/50 transition-colors`}
+      >
+        <div className="flex items-center gap-2">
+          {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          <span className="font-semibold">{entityLabel}</span>
+          <span className="text-xs bg-white/70 px-2 py-0.5 rounded-full">
+            {changes.added.length > 0 && <span className="text-green-600">+{changes.added.length}</span>}
+            {changes.updated.length > 0 && <span className="text-blue-600 ml-1">~{changes.updated.length}</span>}
+            {changes.deleted.length > 0 && <span className="text-red-600 ml-1">-{changes.deleted.length}</span>}
+          </span>
+        </div>
+      </button>
+      {open && (
+        <div className="border-t border-gray-100 bg-white p-3 space-y-2 max-h-96 overflow-y-auto">
+          {changes.added.map((item) => renderChangeItem(item, 'added'))}
+          {changes.updated.map((item) => renderChangeItem(item, 'updated'))}
+          {changes.deleted.map((item) => renderChangeItem(item, 'deleted'))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RestoreResultView({
+  record,
+  onRollback,
+  isAdmin,
+}: {
+  record: RestoreHistoryRecord;
+  onRollback: (snapshotId: string) => void;
+  isAdmin: boolean;
+}) {
+  const entityConfig: Array<{ key: BackupRestoreEntity; label: string; color: 'blue' | 'green' | 'amber' | 'red' | 'purple' }> = [
+    { key: 'beds', label: '床位', color: 'blue' },
+    { key: 'patients', label: '患者', color: 'green' },
+    { key: 'appointments', label: '预约', color: 'purple' },
+    { key: 'admissions', label: '在床记录', color: 'amber' },
+    { key: 'nurses', label: '护士', color: 'blue' },
+    { key: 'operationLogs', label: '操作日志', color: 'red' },
+    { key: 'isolationRules', label: '隔离规则', color: 'amber' },
+    { key: 'timeSlots', label: '时段配置', color: 'blue' },
+    { key: 'careNotes', label: '护理记录', color: 'green' },
+    { key: 'abnormalRecords', label: '异常记录', color: 'red' },
+  ];
+
+  const formatTs = (ts: number) => new Date(ts).toLocaleString('zh-CN', { hour12: false });
+  const formatIso = (iso: string) => new Date(iso).toLocaleString('zh-CN', { hour12: false });
+
+  const totalChanges = Object.values(record.diff).reduce(
+    (sum, d) => sum + d.added + d.updated + d.deleted,
+    0,
+  );
+
+  return (
+    <div className={cn(
+      'rounded-2xl border shadow-sm overflow-hidden',
+      record.status === 'success'
+        ? 'border-emerald-200 bg-gradient-to-br from-emerald-50 to-teal-50'
+        : 'border-red-200 bg-gradient-to-br from-red-50 to-rose-50'
+    )}>
+      <div className="p-5 border-b border-white/60">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex items-start gap-3">
+            <div className={cn(
+              'w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0',
+              record.status === 'success' ? 'bg-emerald-100' : 'bg-red-100'
+            )}>
+              {record.status === 'success' ? (
+                record.operationType === 'restore'
+                  ? <Upload className="w-6 h-6 text-emerald-600" />
+                  : <RotateCcw className="w-6 h-6 text-emerald-600" />
+              ) : (
+                <XCircle className="w-6 h-6 text-red-600" />
+              )}
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-bold text-gray-800 text-lg">
+                  {record.operationType === 'restore' ? '数据恢复' : '数据回滚'}
+                  <span className={cn(
+                    'ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold',
+                    record.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                  )}>
+                    {record.status === 'success' ? '成功' : '失败'}
+                  </span>
+                </h3>
+              </div>
+              <p className="text-sm text-gray-600 mt-1">{record.message}</p>
+              {record.error && (
+                <p className="text-xs text-red-600 mt-1 flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5" />错误码: {record.error}
+                </p>
+              )}
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-gray-500">
+                <span className="inline-flex items-center gap-1">
+                  <User className="w-3.5 h-3.5" />
+                  {record.operatorName}
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <Clock className="w-3.5 h-3.5" />
+                  {formatTs(record.timestamp)}
+                </span>
+                {totalChanges > 0 && (
+                  <span className="inline-flex items-center gap-1 font-medium text-gray-700">
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    共 {totalChanges} 处变动
+                  </span>
+                )}
+              </div>
+              {record.backupVersion && (
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+                  <span>备份版本: <span className="font-mono font-medium text-gray-700">{record.backupVersion}</span></span>
+                  {record.backupExportedAt && (
+                    <span>导出时间: {formatIso(record.backupExportedAt)}</span>
+                  )}
+                </div>
+              )}
+              {record.snapshotId && (
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+                  <span>自动快照: <span className="font-mono font-medium text-indigo-600">{record.snapshotId.slice(0, 12)}...</span></span>
+                  {record.snapshotName && <span>({record.snapshotName})</span>}
+                </div>
+              )}
+              {record.rollbackSnapshotId && (
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+                  <span>回滚目标: <span className="font-mono font-medium text-amber-600">{record.rollbackSnapshotId.slice(0, 12)}...</span></span>
+                  {record.rollbackSnapshotName && <span>({record.rollbackSnapshotName})</span>}
+                </div>
+              )}
+            </div>
+          </div>
+          {record.status === 'success' && record.operationType === 'restore' && record.snapshotId && isAdmin && (
+            <button
+              onClick={() => onRollback(record.snapshotId!)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-white border border-amber-300 text-amber-700 rounded-lg font-medium text-sm hover:bg-amber-50 transition-colors shadow-sm"
+            >
+              <RotateCcw className="w-4 h-4" />发现不对？回退到此快照
+            </button>
+          )}
+        </div>
+      </div>
+
+      {record.status === 'success' && totalChanges > 0 && (
+        <div className="p-4 space-y-2">
+          <h4 className="text-sm font-semibold text-gray-700 px-1 mb-2 flex items-center gap-2">
+            <Eye className="w-4 h-4" />详细差异核对
+          </h4>
+          {entityConfig.map((ec) => (
+            <EntityDiffAccordion
+              key={ec.key}
+              entityKey={ec.key}
+              entityLabel={ec.label}
+              changes={record.detailedDiff[ec.key]}
+              color={ec.color}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DataTab() {
   const {
     importSampleData, resetAllData,
     beds, nurses, isolationRules, timeSlots, patients, appointments,
     admissions, careNotes, operationLogs, abnormalRecords,
-    autoBackupSnapshots, currentUser,
+    autoBackupSnapshots, currentUser, restoreHistory,
     exportBackup, previewRestore, executeRestore, rollbackRestore,
-    getLatestSnapshot, clearOldSnapshots,
+    getLatestSnapshot, clearOldSnapshots, getLatestRestoreRecord,
   } = useAppStore();
   const { showToast } = useToastStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -972,6 +1298,7 @@ function DataTab() {
   const [resetStep, setResetStep] = useState(0);
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [showRollbackModal, setShowRollbackModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [restorePreview, setRestorePreview] = useState<RestorePreview | null>(null);
   const [pendingBackupFile, setPendingBackupFile] = useState<BackupFile | null>(null);
   const [selectedSnapshot, setSelectedSnapshot] = useState<AutoBackupSnapshot | null>(null);
@@ -1152,9 +1479,27 @@ function DataTab() {
   };
 
   const latestSnapshot = getLatestSnapshot();
+  const latestRestoreRecord = getLatestRestoreRecord();
+
+  const handleRestoreResultRollback = (snapshotId: string) => {
+    const snapshot = autoBackupSnapshots.find((s) => s.id === snapshotId);
+    if (snapshot) {
+      handleRollbackClick(snapshot);
+    } else {
+      showToast('该快照已不存在，可能已被清理', 'error');
+    }
+  };
 
   return (
     <div className="space-y-6">
+      {latestRestoreRecord && (
+        <RestoreResultView
+          record={latestRestoreRecord}
+          onRollback={handleRestoreResultRollback}
+          isAdmin={isAdmin}
+        />
+      )}
+
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
         <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
           <Database className="w-5 h-5 text-blue-500" />当前数据统计
@@ -1171,7 +1516,7 @@ function DataTab() {
 
       {latestSnapshot && (
         <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-2xl border border-indigo-100 shadow-sm p-5">
-          <div className="flex items-start justify-between">
+          <div className="flex items-start justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-indigo-100 flex items-center justify-center">
                 <ClockArrowUp className="w-5 h-5 text-indigo-600" />
@@ -1201,7 +1546,14 @@ function DataTab() {
             <div><h3 className="font-bold text-gray-800">导入样例数据</h3><p className="text-xs text-gray-500">快速填充演示数据</p></div>
           </div>
           {!confirmImport ? (
-            <button onClick={() => setConfirmImport(true)} className="w-full py-2.5 bg-emerald-500 text-white rounded-lg font-medium text-sm hover:bg-emerald-600 transition-colors">导入样例数据</button>
+            <button
+              onClick={() => setConfirmImport(true)}
+              disabled={!isAdmin}
+              className={cn('w-full py-2.5 rounded-lg font-medium text-sm transition-colors',
+                isAdmin ? 'bg-emerald-500 text-white hover:bg-emerald-600' : 'bg-gray-200 text-gray-400 cursor-not-allowed')}
+            >
+              {isAdmin ? '导入样例数据' : '仅管理员可操作'}
+            </button>
           ) : (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-3">
               <div className="flex items-start gap-2 text-amber-800">
@@ -1284,6 +1636,71 @@ function DataTab() {
             </div>
           )}
         </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+          <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+            <HistoryIcon className="w-5 h-5 text-purple-500" />恢复与回滚历史
+          </h2>
+          {restoreHistory.length > 0 && (
+            <button
+              onClick={() => setShowHistoryModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-purple-50 text-purple-700 border border-purple-200 rounded-md hover:bg-purple-100 transition-colors"
+            >
+              <HistoryIcon className="w-3.5 h-3.5" />查看全部 ({restoreHistory.length})
+            </button>
+          )}
+        </div>
+        {restoreHistory.length === 0 ? (
+          <div className="text-center py-8 text-gray-400">
+            <HistoryIcon className="w-10 h-10 mx-auto mb-2 opacity-40" />
+            <p className="text-sm">暂无恢复或回滚历史</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {restoreHistory.slice(0, 3).map((record) => (
+              <div key={record.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className={cn(
+                    'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0',
+                    record.status === 'success' ? 'bg-emerald-100' : 'bg-red-100'
+                  )}>
+                    {record.status === 'success'
+                      ? record.operationType === 'restore'
+                        ? <Upload className="w-4 h-4 text-emerald-600" />
+                        : <RotateCcw className="w-4 h-4 text-emerald-600" />
+                      : <XCircle className="w-4 h-4 text-red-600" />
+                    }
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                      {record.operationType === 'restore' ? '数据恢复' : '数据回滚'}
+                      <span className={cn(
+                        'text-[10px] px-1.5 py-0.5 rounded-full font-semibold',
+                        record.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                      )}>
+                        {record.status === 'success' ? '成功' : '失败'}
+                      </span>
+                    </p>
+                    <p className="text-xs text-gray-400 truncate">{record.message}</p>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      {record.operatorName} · {formatTimestamp(record.timestamp)}
+                    </p>
+                  </div>
+                </div>
+                {record.status === 'success' && record.operationType === 'restore' && record.snapshotId && isAdmin && (
+                  <button
+                    onClick={() => handleRestoreResultRollback(record.snapshotId!)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-white border border-amber-200 text-amber-700 rounded-md hover:bg-amber-50 transition-colors flex-shrink-0"
+                  >
+                    <RotateCcw className="w-3 h-3" />回退
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {autoBackupSnapshots.length > 0 && (
@@ -1549,6 +1966,28 @@ function DataTab() {
                 )}
               </button>
             </div>
+          </div>
+        </Modal>
+      )}
+
+      {showHistoryModal && (
+        <Modal title="恢复与回滚历史记录" onClose={() => setShowHistoryModal(false)} size="lg">
+          <div className="space-y-4 max-h-[70vh] overflow-y-auto">
+            {restoreHistory.length === 0 ? (
+              <div className="text-center py-12 text-gray-400">
+                <HistoryIcon className="w-12 h-12 mx-auto mb-3 opacity-40" />
+                <p className="text-sm">暂无历史记录</p>
+              </div>
+            ) : (
+              restoreHistory.map((record) => (
+                <RestoreResultView
+                  key={record.id}
+                  record={record}
+                  onRollback={handleRestoreResultRollback}
+                  isAdmin={isAdmin}
+                />
+              ))
+            )}
           </div>
         </Modal>
       )}

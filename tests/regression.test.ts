@@ -1384,6 +1384,280 @@ async function runAllTests() {
     pass('Test 40: 持久化一致性 - 快照、日志、管理员会话刷新/重开后仍然存在');
   }
 
+  // ───────── 恢复结果与详细差异专项测试 ─────────
+  section('恢复结果与详细差异');
+
+  // 测试41: 恢复成功后 - 详细diff记录正确，历史留痕
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    const originalBedCount = backup.data.beds.length;
+
+    store.getState().addBed({ bedNumber: 'DIFF-001', zone: 'Test', type: 'normal', status: 'idle' });
+    store.getState().addBed({ bedNumber: 'DIFF-002', zone: 'Test', type: 'normal', status: 'idle' });
+    store.getState().updateBed(backup.data.beds[0].id, { notes: 'modified for test' });
+    store.getState().deleteBed(backup.data.beds[originalBedCount - 1].id);
+
+    const restoreResult = store.getState().executeRestore(backup);
+    assert(restoreResult.success === true, '恢复成功');
+
+    const latestRecord = store.getState().getLatestRestoreRecord();
+    assert(latestRecord !== null, '有最新恢复记录');
+    assert(latestRecord.operationType === 'restore', '操作类型为恢复');
+    assert(latestRecord.status === 'success', '状态为成功');
+    assert(latestRecord.operatorId === 'nurse-001', '操作人正确');
+    assert(latestRecord.operatorName === '张管理', '操作人姓名正确');
+    assert(latestRecord.snapshotId !== undefined, '关联了自动快照ID');
+    assert(latestRecord.snapshotName !== undefined, '关联了自动快照名称');
+    assert(latestRecord.backupVersion === 'v1', '备份版本正确');
+
+    assert(latestRecord.detailedDiff.beds.added.length === 1, '详细diff：恢复备份后，被删除的床位被新增回来');
+    assert(latestRecord.detailedDiff.beds.updated.length === 1, '详细diff：更新1个床位');
+    assert(latestRecord.detailedDiff.beds.deleted.length === 2, '详细diff：当前新增的2个测试床位被删除');
+
+    const deletedBed = latestRecord.detailedDiff.beds.deleted.find((b) => b.name === 'DIFF-001');
+    assert(deletedBed !== undefined, '删除床位DIFF-001在diff中');
+    assert(deletedBed.before !== undefined, '包含删除前的数据');
+    assert(deletedBed.before.bedNumber === 'DIFF-001', '删除床位号正确');
+
+    const updatedBed = latestRecord.detailedDiff.beds.updated[0];
+    assert(updatedBed.diffFields !== undefined, '包含差异字段列表');
+    assert(updatedBed.diffFields.some((df) => df.field === 'notes'), '差异字段包含notes');
+    assert(updatedBed.diffFields.some((df) => df.before === 'modified for test'), '变更前值正确');
+
+    const totalChanges = Object.values(latestRecord.diff).reduce(
+      (sum, d) => sum + d.added + d.updated + d.deleted, 0
+    );
+    assert(totalChanges >= 4, '变更总数>=4（2新增+1更新+1删除）');
+
+    pass('Test 41: 恢复成功 - 详细diff完整记录新增/更新/删除，可展开核对');
+  }
+
+  // 测试42: 回滚成功后 - 详细diff记录正确，历史留痕
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    store.getState().addBed({ bedNumber: 'ROLLBACK-001', zone: 'Test', type: 'normal', status: 'idle' });
+    store.getState().addBed({ bedNumber: 'ROLLBACK-002', zone: 'Test', type: 'normal', status: 'idle' });
+
+    const restoreResult = store.getState().executeRestore(backup);
+    assert(restoreResult.success === true, '先执行恢复');
+
+    const restoreRecord = store.getState().getLatestRestoreRecord();
+    const snapshotId = restoreRecord?.snapshotId;
+    assert(snapshotId !== undefined, '恢复关联了快照');
+
+    const rollbackResult = store.getState().rollbackRestore(snapshotId);
+    assert(rollbackResult.success === true, '回滚成功');
+
+    const rollbackRecord = store.getState().getLatestRestoreRecord();
+    assert(rollbackRecord !== null, '有最新回滚记录');
+    assert(rollbackRecord.operationType === 'rollback', '操作类型为回滚');
+    assert(rollbackRecord.status === 'success', '回滚状态为成功');
+    assert(rollbackRecord.rollbackSnapshotId === snapshotId, '关联了回滚目标快照');
+    assert(rollbackRecord.snapshotId !== undefined, '回滚前也创建了新快照');
+
+    assert(rollbackRecord.detailedDiff.beds.added.length === 2, '回滚时2个测试床位被重新添加（从快照恢复）');
+
+    const historyCount = store.getState().restoreHistory.length;
+    assert(historyCount >= 2, '历史记录至少有2条（恢复+回滚）');
+    assert(store.getState().restoreHistory[0].operationType === 'rollback', '最新的是回滚');
+    assert(store.getState().restoreHistory[1].operationType === 'restore', '其次是恢复');
+
+    pass('Test 42: 回滚成功 - 详细diff完整记录，快照双向关联，历史顺序正确');
+  }
+
+  // 测试43: 恢复历史持久化 - 刷新后仍在，状态一致
+  {
+    const store1 = createCleanStore();
+    store1.getState().importSampleData();
+    store1.getState().login('nurse-001', '123456');
+
+    const backup = store1.getState().exportBackup();
+    store1.getState().addBed({ bedNumber: 'PERSIST-001', zone: 'Test', type: 'normal', status: 'idle' });
+    store1.getState().executeRestore(backup);
+
+    const s1 = store1.getState();
+    assert(s1.restoreHistory.length === 1, 'store1有1条恢复历史');
+    const record1 = s1.getLatestRestoreRecord();
+
+    const serializableKeys = [
+      'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
+      'appointments', 'admissions', 'careNotes', 'operationLogs',
+      'abnormalRecords', 'autoBackupSnapshots', 'restoreHistory', 'currentUserId',
+    ] as const;
+
+    const snapshot = JSON.stringify(
+      Object.fromEntries(serializableKeys.map((k) => [k, s1[k]])),
+    );
+
+    const store2 = createCleanStore();
+    const restored = JSON.parse(snapshot);
+    store2.setState(restored);
+    const user = (restored.nurses ?? []).find((n: any) => n.id === restored.currentUserId) || null;
+    store2.setState({ currentUser: user, currentNurse: user });
+
+    const s2 = store2.getState();
+    assert(s2.restoreHistory.length === 1, 'store2恢复后仍有1条恢复历史');
+    const record2 = s2.getLatestRestoreRecord();
+
+    assert(record2?.id === record1?.id, '恢复记录ID一致');
+    assert(record2?.operationType === record1?.operationType, '操作类型一致');
+    assert(record2?.status === record1?.status, '状态一致');
+    assert(record2?.snapshotId === record1?.snapshotId, '快照关联一致');
+    assert(JSON.stringify(record2?.diff) === JSON.stringify(record1?.diff), 'diff一致');
+    assert(record2?.detailedDiff.beds.deleted.length === record1?.detailedDiff.beds.deleted.length, '详细diff一致');
+
+    assert(s2.beds.length === s1.beds.length, '床位数量一致');
+    assert(s2.currentUser?.id === 'nurse-001', '管理员仍在登录');
+
+    pass('Test 43: 持久化一致性 - 恢复历史、快照关联、详细diff刷新/重开后完全一致');
+  }
+
+  // 测试44: 权限限制 - 非管理员可查看结果但不能操作
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    store.getState().addBed({ bedNumber: 'PERM-001', zone: 'Test', type: 'normal', status: 'idle' });
+    store.getState().executeRestore(backup);
+
+    const historyAfterAdmin = store.getState().restoreHistory.length;
+    assert(historyAfterAdmin === 1, '管理员恢复产生1条历史');
+
+    store.getState().login('nurse-004', '123456');
+    assert(store.getState().currentUser?.role === 'normal', '切换为普通护士');
+
+    const latestRecord = store.getState().getLatestRestoreRecord();
+    assert(latestRecord !== null, '普通护士仍可查看恢复历史');
+    assert(latestRecord.status === 'success', '可以看到成功状态');
+    assert(latestRecord.detailedDiff.beds.deleted.length === 1, '可以看到详细diff');
+
+    const restoreResult = store.getState().executeRestore(backup);
+    assert(restoreResult.success === false, '普通护士执行恢复失败');
+    assert(restoreResult.error === 'permission_denied', '错误码为权限拒绝');
+
+    const latestSnapshot = store.getState().getLatestSnapshot();
+    const rollbackResult = store.getState().rollbackRestore(latestSnapshot!.id);
+    assert(rollbackResult.success === false, '普通护士执行回滚失败');
+    assert(rollbackResult.error === 'permission_denied', '错误码为权限拒绝');
+
+    const historyAfterAttempts = store.getState().restoreHistory.length;
+    assert(historyAfterAttempts === 3, '失败操作也记录历史（恢复失败+回滚失败）');
+
+    const failedRecords = store.getState().restoreHistory.filter((r) => r.status === 'failed');
+    assert(failedRecords.length === 2, '有2条失败记录');
+    assert(failedRecords[0].error === 'permission_denied', '失败记录包含错误码');
+    assert(failedRecords[0].operatorId === 'nurse-004', '失败记录操作人正确');
+    assert(failedRecords[0].operatorName === '赵普通', '失败记录操作人姓名正确');
+
+    const abnormalTypes = store.getState().abnormalRecords
+      .filter((a) => !a.handled)
+      .map((a) => a.type);
+    assert(abnormalTypes.includes('backup_permission_denied'), '异常记录包含权限拒绝类型');
+
+    pass('Test 44: 权限控制 - 非管理员可查看结果但不可操作，失败尝试仍完整留痕');
+  }
+
+  // 测试45: 异常场景 - 快照不存在时明确提示并记录
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const beforeHistoryCount = store.getState().restoreHistory.length;
+    const beforeAbnormalCount = store.getState().abnormalRecords.length;
+
+    const rollbackResult = store.getState().rollbackRestore('non-existent-snapshot-id');
+    assert(rollbackResult.success === false, '快照不存在时回滚失败');
+    assert(rollbackResult.error === 'snapshot_not_found', '错误码正确');
+    assert(rollbackResult.message.includes('未找到快照'), '错误信息明确');
+
+    const afterHistoryCount = store.getState().restoreHistory.length;
+    assert(afterHistoryCount === beforeHistoryCount + 1, '失败操作增加1条历史');
+
+    const failedRecord = store.getState().getLatestRestoreRecord();
+    assert(failedRecord?.status === 'failed', '历史记录状态为失败');
+    assert(failedRecord?.operationType === 'rollback', '操作类型为回滚');
+    assert(failedRecord?.error === 'snapshot_not_found', '历史记录包含错误码');
+    assert(failedRecord?.rollbackSnapshotId === 'non-existent-snapshot-id', '历史记录关联了不存在的快照ID');
+
+    const afterAbnormalCount = store.getState().abnormalRecords.length;
+    assert(afterAbnormalCount === beforeAbnormalCount + 1, '新增1条异常记录');
+
+    const latestAbnormal = store.getState().abnormalRecords[0];
+    assert(latestAbnormal.type === 'data_conflict', '异常类型正确');
+    assert(latestAbnormal.description.includes('未找到快照'), '异常描述明确');
+
+    pass('Test 45: 异常场景 - 快照不存在时给出明确提示，历史页和异常页均留痕');
+  }
+
+  // 测试46: 详细diff计算 - 字段级差异正确识别
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const bed = store.getState().beds[0];
+    const originalNotes = bed.notes;
+
+    const beforeData = {
+      beds: JSON.parse(JSON.stringify(store.getState().beds)),
+      nurses: JSON.parse(JSON.stringify(store.getState().nurses)),
+      isolationRules: JSON.parse(JSON.stringify(store.getState().isolationRules)),
+      timeSlots: JSON.parse(JSON.stringify(store.getState().timeSlots)),
+      patients: JSON.parse(JSON.stringify(store.getState().patients)),
+      appointments: JSON.parse(JSON.stringify(store.getState().appointments)),
+      admissions: JSON.parse(JSON.stringify(store.getState().admissions)),
+      careNotes: JSON.parse(JSON.stringify(store.getState().careNotes)),
+      operationLogs: JSON.parse(JSON.stringify(store.getState().operationLogs)),
+      abnormalRecords: JSON.parse(JSON.stringify(store.getState().abnormalRecords)),
+    };
+
+    store.getState().updateBed(bed.id, { notes: 'updated notes for diff test', status: 'cleaning' });
+
+    const afterData = {
+      beds: JSON.parse(JSON.stringify(store.getState().beds)),
+      nurses: JSON.parse(JSON.stringify(store.getState().nurses)),
+      isolationRules: JSON.parse(JSON.stringify(store.getState().isolationRules)),
+      timeSlots: JSON.parse(JSON.stringify(store.getState().timeSlots)),
+      patients: JSON.parse(JSON.stringify(store.getState().patients)),
+      appointments: JSON.parse(JSON.stringify(store.getState().appointments)),
+      admissions: JSON.parse(JSON.stringify(store.getState().admissions)),
+      careNotes: JSON.parse(JSON.stringify(store.getState().careNotes)),
+      operationLogs: JSON.parse(JSON.stringify(store.getState().operationLogs)),
+      abnormalRecords: JSON.parse(JSON.stringify(store.getState().abnormalRecords)),
+    };
+
+    const detailedDiff = store.getState().calculateDetailedDiff(beforeData, afterData);
+    assert(detailedDiff.beds.updated.length === 1, '识别到1个更新的床位');
+
+    const updatedBed = detailedDiff.beds.updated[0];
+    assert(updatedBed.id === bed.id, '更新的床位ID正确');
+    assert(updatedBed.diffFields !== undefined, '包含差异字段');
+    assert(updatedBed.diffFields.length >= 2, '至少2个字段变化（notes + status）');
+
+    const notesDiff = updatedBed.diffFields.find((df) => df.field === 'notes');
+    assert(notesDiff !== undefined, '识别到notes字段变化');
+    assert(notesDiff.before === originalNotes, 'notes变更前正确');
+    assert(notesDiff.after === 'updated notes for diff test', 'notes变更后正确');
+
+    const statusDiff = updatedBed.diffFields.find((df) => df.field === 'status');
+    assert(statusDiff !== undefined, '识别到status字段变化');
+    assert(statusDiff.before === bed.status, 'status变更前正确');
+    assert(statusDiff.after === 'cleaning', 'status变更后正确');
+
+    pass('Test 46: 详细diff计算 - 字段级差异正确识别，变更前后值完整');
+  }
+
   // ───────── 测试汇总 ─────────
   section('测试汇总');
 

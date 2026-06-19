@@ -29,6 +29,10 @@ import type {
   EntityDiff,
   ValidationIssue,
   BackupRestoreEntity,
+  RestoreDetailedDiff,
+  EntityChanges,
+  EntityChangeItem,
+  RestoreHistoryRecord,
 } from '../types';
 import { sampleData } from '../data/sampleData';
 import { parseLocalTime } from '../lib/utils';
@@ -51,6 +55,7 @@ type PersistedState = {
   operationLogs: OperationLog[];
   abnormalRecords: AbnormalRecord[];
   autoBackupSnapshots: AutoBackupSnapshot[];
+  restoreHistory: RestoreHistoryRecord[];
 };
 
 type AppState = PersistedState & {
@@ -112,6 +117,10 @@ type AppState = PersistedState & {
   getLatestSnapshot: () => AutoBackupSnapshot | null;
   deleteSnapshot: (snapshotId: string) => void;
   clearOldSnapshots: (maxCount?: number) => void;
+  calculateDetailedDiff: (beforeData: BackupData, afterData: BackupData) => RestoreDetailedDiff;
+  addRestoreHistory: (record: Omit<RestoreHistoryRecord, 'id' | 'timestamp'>) => RestoreHistoryRecord;
+  getLatestRestoreRecord: () => RestoreHistoryRecord | null;
+  clearRestoreHistory: () => void;
 };
 
 type StoreGet = () => AppState;
@@ -132,6 +141,7 @@ const initialPersisted: PersistedState = {
   operationLogs: [],
   abnormalRecords: [],
   autoBackupSnapshots: [],
+  restoreHistory: [],
 };
 
 function deriveCurrentUser(state: PersistedState): Nurse | null {
@@ -1295,7 +1305,58 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const state = get();
       const currentUser = state.currentUser;
 
+      const beforeData: BackupData = {
+        beds: JSON.parse(JSON.stringify(state.beds)),
+        nurses: JSON.parse(JSON.stringify(state.nurses)),
+        isolationRules: JSON.parse(JSON.stringify(state.isolationRules)),
+        timeSlots: JSON.parse(JSON.stringify(state.timeSlots)),
+        patients: JSON.parse(JSON.stringify(state.patients)),
+        appointments: JSON.parse(JSON.stringify(state.appointments)),
+        admissions: JSON.parse(JSON.stringify(state.admissions)),
+        careNotes: JSON.parse(JSON.stringify(state.careNotes)),
+        operationLogs: JSON.parse(JSON.stringify(state.operationLogs)),
+        abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
+      };
+
+      const emptyOverview: Record<BackupRestoreEntity, number> = {
+        beds: 0, nurses: 0, isolationRules: 0, timeSlots: 0, patients: 0,
+        appointments: 0, admissions: 0, careNotes: 0, operationLogs: 0, abnormalRecords: 0,
+      };
+      const emptyDiff: RestoreDiff = {
+        beds: { added: 0, updated: 0, deleted: 0 },
+        nurses: { added: 0, updated: 0, deleted: 0 },
+        isolationRules: { added: 0, updated: 0, deleted: 0 },
+        timeSlots: { added: 0, updated: 0, deleted: 0 },
+        patients: { added: 0, updated: 0, deleted: 0 },
+        appointments: { added: 0, updated: 0, deleted: 0 },
+        admissions: { added: 0, updated: 0, deleted: 0 },
+        careNotes: { added: 0, updated: 0, deleted: 0 },
+        operationLogs: { added: 0, updated: 0, deleted: 0 },
+        abnormalRecords: { added: 0, updated: 0, deleted: 0 },
+      };
+      const emptyDetailedDiff = state.calculateDetailedDiff(beforeData, beforeData);
+
       if (!currentUser || currentUser.role !== 'admin') {
+        const opLogId = helpers.opLog(
+          'backup_restore',
+          'system',
+          '数据恢复失败：只有管理员可以执行数据恢复操作',
+          { isAbnormal: true, abnormalReason: 'backup_permission_denied' },
+        );
+        helpers.abnRec('backup_permission_denied', opLogId, '非管理员尝试执行数据恢复操作');
+        state.addRestoreHistory({
+          operationType: 'restore',
+          status: 'failed',
+          operatorId: currentUser?.id ?? 'unknown',
+          operatorName: currentUser?.name ?? '未知用户',
+          backupVersion: backupFile.version,
+          backupExportedAt: backupFile.exportedAt,
+          message: '只有管理员可以执行数据恢复操作',
+          error: 'permission_denied',
+          dataOverview: emptyOverview,
+          diff: emptyDiff,
+          detailedDiff: emptyDetailedDiff,
+        });
         return {
           success: false,
           message: '只有管理员可以执行数据恢复操作',
@@ -1306,35 +1367,62 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const preview = state.previewRestore(backupFile);
       if (!preview.canRestore) {
         const errors = preview.issues.filter((i) => i.severity === 'error').map((i) => i.message);
+        const errMsg = `备份文件校验失败: ${errors.join('; ')}`;
+        const opLogId = helpers.opLog(
+          'backup_restore',
+          'system',
+          `数据恢复失败：${errMsg}`,
+          { isAbnormal: true, abnormalReason: preview.issues[0]?.type ?? 'data_conflict' },
+        );
+        helpers.abnRec(
+          (preview.issues[0]?.type as AbnormalType) ?? 'data_conflict',
+          opLogId,
+          errMsg,
+        );
+        state.addRestoreHistory({
+          operationType: 'restore',
+          status: 'failed',
+          operatorId: currentUser.id,
+          operatorName: currentUser.name,
+          backupVersion: backupFile.version,
+          backupExportedAt: backupFile.exportedAt,
+          message: errMsg,
+          error: 'validation_failed',
+          dataOverview: preview.dataOverview,
+          diff: preview.diff,
+          detailedDiff: emptyDetailedDiff,
+        });
         return {
           success: false,
-          message: `备份文件校验失败: ${errors.join('; ')}`,
+          message: errMsg,
           error: 'validation_failed',
         };
       }
 
       const snapshot = state.createAutoSnapshot('恢复前自动备份');
+      const afterData = backupFile.data;
 
-      const data = backupFile.data;
-      const newNurses = JSON.parse(JSON.stringify(data.nurses ?? []));
+      const newNurses = JSON.parse(JSON.stringify(afterData.nurses ?? []));
       const adminStillExists = newNurses.find(
         (n: Nurse) => n.id === currentUser.id && n.role === 'admin',
       );
 
       set({
-        beds: JSON.parse(JSON.stringify(data.beds ?? [])),
+        beds: JSON.parse(JSON.stringify(afterData.beds ?? [])),
         nurses: newNurses,
-        isolationRules: JSON.parse(JSON.stringify(data.isolationRules ?? [])),
-        timeSlots: JSON.parse(JSON.stringify(data.timeSlots ?? [])),
-        patients: JSON.parse(JSON.stringify(data.patients ?? [])),
-        appointments: JSON.parse(JSON.stringify(data.appointments ?? [])),
-        admissions: JSON.parse(JSON.stringify(data.admissions ?? [])),
-        careNotes: JSON.parse(JSON.stringify(data.careNotes ?? [])),
-        abnormalRecords: JSON.parse(JSON.stringify(data.abnormalRecords ?? [])),
+        isolationRules: JSON.parse(JSON.stringify(afterData.isolationRules ?? [])),
+        timeSlots: JSON.parse(JSON.stringify(afterData.timeSlots ?? [])),
+        patients: JSON.parse(JSON.stringify(afterData.patients ?? [])),
+        appointments: JSON.parse(JSON.stringify(afterData.appointments ?? [])),
+        admissions: JSON.parse(JSON.stringify(afterData.admissions ?? [])),
+        careNotes: JSON.parse(JSON.stringify(afterData.careNotes ?? [])),
+        abnormalRecords: JSON.parse(JSON.stringify(afterData.abnormalRecords ?? [])),
         currentUserId: adminStillExists ? currentUser.id : null,
         currentUser: adminStillExists ? adminStillExists : null,
         currentNurse: adminStillExists ? adminStillExists : null,
       });
+
+      const detailedDiff = state.calculateDetailedDiff(beforeData, afterData);
 
       const newState = get();
       const restoreLog: OperationLog = {
@@ -1351,6 +1439,21 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         operationLogs: [restoreLog, ...newState.operationLogs],
       });
 
+      state.addRestoreHistory({
+        operationType: 'restore',
+        status: 'success',
+        operatorId: currentUser.id,
+        operatorName: currentUser.name,
+        backupVersion: backupFile.version,
+        backupExportedAt: backupFile.exportedAt,
+        snapshotId: snapshot.id,
+        snapshotName: snapshot.name,
+        message: '数据恢复成功',
+        dataOverview: preview.dataOverview,
+        diff: preview.diff,
+        detailedDiff,
+      });
+
       state.clearOldSnapshots(10);
 
       return {
@@ -1365,7 +1468,57 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const state = get();
       const currentUser = state.currentUser;
 
+      const beforeData: BackupData = {
+        beds: JSON.parse(JSON.stringify(state.beds)),
+        nurses: JSON.parse(JSON.stringify(state.nurses)),
+        isolationRules: JSON.parse(JSON.stringify(state.isolationRules)),
+        timeSlots: JSON.parse(JSON.stringify(state.timeSlots)),
+        patients: JSON.parse(JSON.stringify(state.patients)),
+        appointments: JSON.parse(JSON.stringify(state.appointments)),
+        admissions: JSON.parse(JSON.stringify(state.admissions)),
+        careNotes: JSON.parse(JSON.stringify(state.careNotes)),
+        operationLogs: JSON.parse(JSON.stringify(state.operationLogs)),
+        abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
+      };
+
+      const emptyOverview: Record<BackupRestoreEntity, number> = {
+        beds: 0, nurses: 0, isolationRules: 0, timeSlots: 0, patients: 0,
+        appointments: 0, admissions: 0, careNotes: 0, operationLogs: 0, abnormalRecords: 0,
+      };
+      const emptyDiff: RestoreDiff = {
+        beds: { added: 0, updated: 0, deleted: 0 },
+        nurses: { added: 0, updated: 0, deleted: 0 },
+        isolationRules: { added: 0, updated: 0, deleted: 0 },
+        timeSlots: { added: 0, updated: 0, deleted: 0 },
+        patients: { added: 0, updated: 0, deleted: 0 },
+        appointments: { added: 0, updated: 0, deleted: 0 },
+        admissions: { added: 0, updated: 0, deleted: 0 },
+        careNotes: { added: 0, updated: 0, deleted: 0 },
+        operationLogs: { added: 0, updated: 0, deleted: 0 },
+        abnormalRecords: { added: 0, updated: 0, deleted: 0 },
+      };
+      const emptyDetailedDiff = state.calculateDetailedDiff(beforeData, beforeData);
+
       if (!currentUser || currentUser.role !== 'admin') {
+        const opLogId = helpers.opLog(
+          'backup_restore_rollback',
+          'system',
+          '数据回滚失败：只有管理员可以执行回滚操作',
+          { isAbnormal: true, abnormalReason: 'backup_permission_denied' },
+        );
+        helpers.abnRec('backup_permission_denied', opLogId, '非管理员尝试执行数据回滚操作');
+        state.addRestoreHistory({
+          operationType: 'rollback',
+          status: 'failed',
+          operatorId: currentUser?.id ?? 'unknown',
+          operatorName: currentUser?.name ?? '未知用户',
+          rollbackSnapshotId: snapshotId,
+          message: '只有管理员可以执行回滚操作',
+          error: 'permission_denied',
+          dataOverview: emptyOverview,
+          diff: emptyDiff,
+          detailedDiff: emptyDetailedDiff,
+        });
         return {
           success: false,
           message: '只有管理员可以执行回滚操作',
@@ -1375,35 +1528,75 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
 
       const snapshot = state.autoBackupSnapshots.find((s) => s.id === snapshotId);
       if (!snapshot) {
+        const errMsg = `未找到快照: ${snapshotId}`;
+        const opLogId = helpers.opLog(
+          'backup_restore_rollback',
+          'system',
+          `数据回滚失败：${errMsg}`,
+          { isAbnormal: true, abnormalReason: 'data_conflict' },
+        );
+        helpers.abnRec('data_conflict', opLogId, errMsg);
+        state.addRestoreHistory({
+          operationType: 'rollback',
+          status: 'failed',
+          operatorId: currentUser.id,
+          operatorName: currentUser.name,
+          rollbackSnapshotId: snapshotId,
+          message: errMsg,
+          error: 'snapshot_not_found',
+          dataOverview: emptyOverview,
+          diff: emptyDiff,
+          detailedDiff: emptyDetailedDiff,
+        });
         return {
           success: false,
-          message: `未找到快照: ${snapshotId}`,
+          message: errMsg,
           error: 'snapshot_not_found',
         };
       }
 
       const beforeRollbackSnapshot = state.createAutoSnapshot('回滚前自动备份');
+      const afterData = snapshot.data;
 
-      const data = snapshot.data;
-      const newNurses = JSON.parse(JSON.stringify(data.nurses ?? []));
+      const newNurses = JSON.parse(JSON.stringify(afterData.nurses ?? []));
       const adminStillExists = newNurses.find(
         (n: Nurse) => n.id === currentUser.id && n.role === 'admin',
       );
 
       set({
-        beds: JSON.parse(JSON.stringify(data.beds ?? [])),
+        beds: JSON.parse(JSON.stringify(afterData.beds ?? [])),
         nurses: newNurses,
-        isolationRules: JSON.parse(JSON.stringify(data.isolationRules ?? [])),
-        timeSlots: JSON.parse(JSON.stringify(data.timeSlots ?? [])),
-        patients: JSON.parse(JSON.stringify(data.patients ?? [])),
-        appointments: JSON.parse(JSON.stringify(data.appointments ?? [])),
-        admissions: JSON.parse(JSON.stringify(data.admissions ?? [])),
-        careNotes: JSON.parse(JSON.stringify(data.careNotes ?? [])),
-        abnormalRecords: JSON.parse(JSON.stringify(data.abnormalRecords ?? [])),
+        isolationRules: JSON.parse(JSON.stringify(afterData.isolationRules ?? [])),
+        timeSlots: JSON.parse(JSON.stringify(afterData.timeSlots ?? [])),
+        patients: JSON.parse(JSON.stringify(afterData.patients ?? [])),
+        appointments: JSON.parse(JSON.stringify(afterData.appointments ?? [])),
+        admissions: JSON.parse(JSON.stringify(afterData.admissions ?? [])),
+        careNotes: JSON.parse(JSON.stringify(afterData.careNotes ?? [])),
+        abnormalRecords: JSON.parse(JSON.stringify(afterData.abnormalRecords ?? [])),
         currentUserId: adminStillExists ? currentUser.id : null,
         currentUser: adminStillExists ? adminStillExists : null,
         currentNurse: adminStillExists ? adminStillExists : null,
       });
+
+      const detailedDiff = state.calculateDetailedDiff(beforeData, afterData);
+
+      const entityKeys: BackupRestoreEntity[] = [
+        'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
+        'appointments', 'admissions', 'careNotes', 'operationLogs', 'abnormalRecords',
+      ];
+      const dataOverview: Record<BackupRestoreEntity, number> = {} as Record<BackupRestoreEntity, number>;
+      for (const key of entityKeys) {
+        dataOverview[key] = (afterData[key] as any[])?.length ?? 0;
+      }
+      const rollbackDiff: RestoreDiff = {} as RestoreDiff;
+      for (const key of entityKeys) {
+        const changes = (detailedDiff as any)[key] as EntityChanges;
+        rollbackDiff[key] = {
+          added: changes.added.length,
+          updated: changes.updated.length,
+          deleted: changes.deleted.length,
+        };
+      }
 
       const newState = get();
       const rollbackLog: OperationLog = {
@@ -1418,6 +1611,21 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       };
       set({
         operationLogs: [rollbackLog, ...newState.operationLogs],
+      });
+
+      state.addRestoreHistory({
+        operationType: 'rollback',
+        status: 'success',
+        operatorId: currentUser.id,
+        operatorName: currentUser.name,
+        snapshotId: beforeRollbackSnapshot.id,
+        snapshotName: beforeRollbackSnapshot.name,
+        rollbackSnapshotId: snapshot.id,
+        rollbackSnapshotName: snapshot.name,
+        message: '数据回滚成功',
+        dataOverview,
+        diff: rollbackDiff,
+        detailedDiff,
       });
 
       return {
@@ -1486,6 +1694,108 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         });
       }
     },
+
+    calculateDetailedDiff: (beforeData: BackupData, afterData: BackupData): RestoreDetailedDiff => {
+      const entityKeys: BackupRestoreEntity[] = [
+        'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
+        'appointments', 'admissions', 'careNotes', 'operationLogs', 'abnormalRecords',
+      ];
+
+      const entityNameFields: Record<BackupRestoreEntity, string> = {
+        beds: 'bedNumber',
+        nurses: 'name',
+        isolationRules: 'disease',
+        timeSlots: 'label',
+        patients: 'name',
+        appointments: 'id',
+        admissions: 'id',
+        careNotes: 'id',
+        operationLogs: 'id',
+        abnormalRecords: 'id',
+      };
+
+      const result: RestoreDetailedDiff = {} as RestoreDetailedDiff;
+
+      for (const key of entityKeys) {
+        const before = (beforeData[key] as any[]) ?? [];
+        const after = (afterData[key] as any[]) ?? [];
+        const beforeMap = new Map(before.map((item) => [item.id, item]));
+        const afterMap = new Map(after.map((item) => [item.id, item]));
+        const nameField = entityNameFields[key];
+
+        const added: EntityChangeItem[] = [];
+        const updated: EntityChangeItem[] = [];
+        const deleted: EntityChangeItem[] = [];
+
+        for (const item of after) {
+          if (!beforeMap.has(item.id)) {
+            added.push({
+              id: item.id,
+              name: String(item[nameField] ?? item.id),
+              changeType: 'added',
+              after: item,
+            });
+          } else {
+            const beforeItem = beforeMap.get(item.id)!;
+            const diffFields: Array<{ field: string; before: any; after: any }> = [];
+            const allKeys = new Set([...Object.keys(beforeItem), ...Object.keys(item)]);
+            for (const f of allKeys) {
+              const bVal = JSON.stringify(beforeItem[f]);
+              const aVal = JSON.stringify(item[f]);
+              if (bVal !== aVal) {
+                diffFields.push({ field: f, before: beforeItem[f], after: item[f] });
+              }
+            }
+            if (diffFields.length > 0) {
+              updated.push({
+                id: item.id,
+                name: String(item[nameField] ?? item.id),
+                changeType: 'updated',
+                before: beforeItem,
+                after: item,
+                diffFields,
+              });
+            }
+          }
+        }
+
+        for (const item of before) {
+          if (!afterMap.has(item.id)) {
+            deleted.push({
+              id: item.id,
+              name: String(item[nameField] ?? item.id),
+              changeType: 'deleted',
+              before: item,
+            });
+          }
+        }
+
+        (result as any)[key] = { added, updated, deleted };
+      }
+
+      return result;
+    },
+
+    addRestoreHistory: (record: Omit<RestoreHistoryRecord, 'id' | 'timestamp'>): RestoreHistoryRecord => {
+      const state = get();
+      const newRecord: RestoreHistoryRecord = {
+        ...record,
+        id: genId(),
+        timestamp: Date.now(),
+      };
+      const newHistory = [newRecord, ...state.restoreHistory].slice(0, 50);
+      set({ restoreHistory: newHistory });
+      return newRecord;
+    },
+
+    getLatestRestoreRecord: (): RestoreHistoryRecord | null => {
+      const state = get();
+      return state.restoreHistory[0] ?? null;
+    },
+
+    clearRestoreHistory: (): void => {
+      set({ restoreHistory: [] });
+    },
   };
 };
 
@@ -1501,6 +1811,7 @@ const persistedKeys: (keyof PersistedState)[] = [
   'operationLogs',
   'abnormalRecords',
   'autoBackupSnapshots',
+  'restoreHistory',
   'currentUserId',
 ];
 
