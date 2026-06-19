@@ -985,6 +985,387 @@ async function runAllTests() {
     pass('Test 24: 浏览器导出场景 - 文件名使用本地日期，首条记录时长非负，与 README 说明一致');
   }
 
+  // ───────── 备份恢复专项测试 ─────────
+  section('备份恢复功能专项');
+
+  // 测试25: 导出备份功能
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    assert(backup.version === 'v1', '备份版本为 v1');
+    assert(backup.exportedAt.length > 0, '备份包含导出时间');
+    assert(backup.data.beds.length > 0, '备份包含床位数据');
+    assert(backup.data.patients.length > 0, '备份包含患者数据');
+    assert(backup.data.appointments.length > 0, '备份包含预约数据');
+    assert(backup.data.admissions.length > 0, '备份包含在床数据');
+    assert(backup.data.operationLogs.length > 0, '备份包含操作日志');
+    assert(backup.data.abnormalRecords.length > 0, '备份包含异常记录');
+
+    const exportLog = store.getState().operationLogs.find((l) => l.type === 'backup_export');
+    assert(exportLog, '导出操作记录日志');
+
+    pass('Test 25: 导出备份 - 版本、时间、各实体数据完整，操作留痕');
+  }
+
+  // 测试26: 预检恢复 - 正常备份文件（管理员权限）
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    const preview = store.getState().previewRestore(backup);
+
+    assert(preview.canRestore === true, '正常备份文件可以恢复');
+    assert(preview.issues.length === 0, '正常备份文件无问题');
+    assert(preview.version === 'v1', '预检版本正确');
+    assert(preview.exportedAt === backup.exportedAt, '预检导出时间正确');
+
+    const previewLog = store.getState().operationLogs.find((l) => l.type === 'backup_restore_preview');
+    assert(previewLog, '预检操作记录日志');
+    assert(previewLog?.isAbnormal === false, '正常预检不标记异常');
+
+    pass('Test 26: 预检恢复 - 正常备份文件通过校验，可恢复');
+  }
+
+  // 测试27: 预检恢复 - 非管理员权限被拒绝
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-004', '123456');
+
+    const backup = store.getState().exportBackup();
+    const preview = store.getState().previewRestore(backup);
+
+    assert(preview.canRestore === false, '非管理员不能恢复');
+    assert(preview.issues.some((i) => i.type === 'backup_permission_denied'), '包含权限拒绝问题');
+    assert(preview.issues.some((i) => i.severity === 'error'), '问题级别为 error');
+
+    const previewLog = store.getState().operationLogs.find((l) => l.type === 'backup_restore_preview');
+    assert(previewLog?.isAbnormal === true, '权限不足预检标记异常');
+
+    pass('Test 27: 预检恢复 - 非管理员权限被拒绝，异常留痕');
+  }
+
+  // 测试28: 预检恢复 - 未知版本被拦截
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    const badBackup = { ...backup, version: 'v999' };
+    const preview = store.getState().previewRestore(badBackup);
+
+    assert(preview.canRestore === false, '未知版本不能恢复');
+    assert(preview.issues.some((i) => i.type === 'backup_version_unknown'), '包含版本未知问题');
+    assert(preview.issues.some((i) => i.message.includes('v999')), '问题信息包含错误版本号');
+
+    pass('Test 28: 预检恢复 - 未知版本被拦截，错误信息明确');
+  }
+
+  // 测试29: 预检恢复 - 床位编号冲突被拦截
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    const badBackup = JSON.parse(JSON.stringify(backup));
+    badBackup.data.beds[0].bedNumber = badBackup.data.beds[1].bedNumber;
+
+    const preview = store.getState().previewRestore(badBackup);
+
+    assert(preview.canRestore === false, '床位编号冲突不能恢复');
+    assert(preview.issues.some((i) => i.type === 'backup_bed_number_conflict'), '包含床位冲突问题');
+    assert(preview.issues[0].details && preview.issues[0].details.length > 0, '包含具体冲突床位号');
+
+    pass('Test 29: 预检恢复 - 床位编号冲突被拦截，列出冲突床位');
+  }
+
+  // 测试30: 预检恢复 - 同一患者重复在床被拦截
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    const badBackup = JSON.parse(JSON.stringify(backup));
+
+    const inBedAdm = badBackup.data.admissions.find((a: any) => a.status === 'in_bed');
+    if (inBedAdm) {
+      const duplicateAdm = { ...inBedAdm, id: 'dup-' + inBedAdm.id, bedId: 'another-bed-id' };
+      badBackup.data.admissions.push(duplicateAdm);
+    }
+
+    const preview = store.getState().previewRestore(badBackup);
+
+    assert(preview.canRestore === false, '同一患者重复在床不能恢复');
+    assert(preview.issues.some((i) => i.type === 'backup_patient_duplicate_admission'), '包含重复在床问题');
+
+    pass('Test 30: 预检恢复 - 同一患者重复在床被拦截');
+  }
+
+  // 测试31: 预检恢复 - 缺少必需字段被拦截
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    const badBackup = JSON.parse(JSON.stringify(backup));
+    delete badBackup.data.beds;
+
+    const preview = store.getState().previewRestore(badBackup);
+
+    assert(preview.canRestore === false, '缺少必需字段不能恢复');
+    assert(preview.issues.some((i) => i.type === 'backup_missing_required_field'), '包含缺字段问题');
+    assert(preview.issues.some((i) => i.message.includes('beds')), '问题信息指出缺少 beds');
+
+    pass('Test 31: 预检恢复 - 缺少必需字段被拦截');
+  }
+
+  // 测试32: 预检恢复 - 差异分析正确（新增、更新、删除）
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    const originalBedCount = backup.data.beds.length;
+
+    store.getState().addBed({ bedNumber: 'NEW-100', zone: 'A', type: 'normal', status: 'idle' });
+    store.getState().updateBed(backup.data.beds[0].id, { notes: 'updated' });
+    store.getState().deleteBed(backup.data.beds[originalBedCount - 1].id);
+
+    const preview = store.getState().previewRestore(backup);
+
+    assert(preview.diff.beds.added === 1, '差异分析：新增1个床位');
+    assert(preview.diff.beds.updated === 1, '差异分析：更新1个床位');
+    assert(preview.diff.beds.deleted === 1, '差异分析：删除1个床位');
+
+    assert(preview.dataOverview.beds === originalBedCount, '数据概览床位数量正确');
+    assert(preview.dataOverview.patients === backup.data.patients.length, '数据概览患者数量正确');
+
+    pass('Test 32: 预检恢复 - 差异分析正确，数据概览完整');
+  }
+
+  // 测试33: 完整流程 - 导出→改数据→恢复→回退
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const originalBedCount = store.getState().beds.length;
+    const originalPatientCount = store.getState().patients.length;
+    const originalSnapshotCount = store.getState().autoBackupSnapshots.length;
+
+    const backup = store.getState().exportBackup();
+
+    store.getState().addBed({ bedNumber: 'TEST-A1', zone: 'Test', type: 'normal', status: 'idle' });
+    store.getState().addBed({ bedNumber: 'TEST-A2', zone: 'Test', type: 'normal', status: 'idle' });
+    assert(store.getState().beds.length === originalBedCount + 2, '成功添加2个测试床位');
+
+    const beforeRestoreSnapshot = store.getState().autoBackupSnapshots.length;
+    const restoreResult = store.getState().executeRestore(backup);
+
+    assert(restoreResult.success === true, '恢复成功');
+    assert(restoreResult.snapshotId !== undefined, '返回快照ID');
+    assert(store.getState().beds.length === originalBedCount, '恢复后床位数量回到原值');
+    assert(store.getState().autoBackupSnapshots.length === beforeRestoreSnapshot + 1, '恢复前创建了自动快照');
+
+    const restoreLog = store.getState().operationLogs.find((l) => l.type === 'backup_restore');
+    assert(restoreLog, '恢复操作记录日志');
+    assert(restoreLog?.detail.includes(restoreResult.snapshotId!), '恢复日志包含快照ID');
+
+    const snapshotLog = store.getState().operationLogs.find((l) => l.type === 'backup_auto_snapshot');
+    assert(snapshotLog, '自动快照记录日志');
+
+    const latestSnapshot = store.getState().getLatestSnapshot();
+    assert(latestSnapshot !== null, '可以获取最新快照');
+    assert(latestSnapshot?.name.includes('恢复前自动备份'), '快照名称正确');
+    assert(latestSnapshot?.data.beds.length === originalBedCount + 2, '快照保存了修改后的数据');
+
+    store.getState().login('nurse-001', '123456');
+
+    const rollbackResult = store.getState().rollbackRestore(latestSnapshot!.id);
+    assert(rollbackResult.success === true, '回滚成功');
+    assert(store.getState().beds.length === originalBedCount + 2, '回滚后床位数量恢复到修改后的值');
+
+    const rollbackLog = store.getState().operationLogs.find((l) => l.type === 'backup_restore_rollback');
+    assert(rollbackLog, '回滚操作记录日志');
+    assert(rollbackLog?.detail.includes(latestSnapshot!.id), '回滚日志包含快照ID');
+
+    pass('Test 33: 完整流程 - 导出→改数据→恢复→回退，全部成功且留痕');
+  }
+
+  // 测试34: 恢复执行 - 冲突文件被拒绝（不创建快照）
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    const badBackup = JSON.parse(JSON.stringify(backup));
+    badBackup.data.beds[0].bedNumber = badBackup.data.beds[1].bedNumber;
+
+    const beforeSnapshotCount = store.getState().autoBackupSnapshots.length;
+    const beforeLogCount = store.getState().operationLogs.length;
+
+    const restoreResult = store.getState().executeRestore(badBackup);
+
+    assert(restoreResult.success === false, '冲突文件恢复失败');
+    assert(restoreResult.error === 'validation_failed', '错误类型正确');
+    assert(restoreResult.message.includes('校验失败'), '错误信息明确');
+
+    assert(store.getState().autoBackupSnapshots.length === beforeSnapshotCount, '失败恢复不创建快照');
+    assert(store.getState().operationLogs.length > beforeLogCount, '失败操作仍记录日志');
+
+    pass('Test 34: 恢复执行 - 冲突文件被拒绝，不创建快照，异常留痕');
+  }
+
+  // 测试35: 恢复执行 - 非管理员被拒绝
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-004', '123456');
+
+    const backup = store.getState().exportBackup();
+    const restoreResult = store.getState().executeRestore(backup);
+
+    assert(restoreResult.success === false, '非管理员恢复失败');
+    assert(restoreResult.error === 'permission_denied', '错误类型正确');
+
+    pass('Test 35: 恢复执行 - 非管理员权限被拒绝');
+  }
+
+  // 测试36: 自动快照管理 - 最多保留10个
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    for (let i = 0; i < 15; i++) {
+      store.getState().createAutoSnapshot(`测试快照 ${i + 1}`);
+    }
+
+    assert(store.getState().autoBackupSnapshots.length === 15, '创建15个快照');
+
+    store.getState().clearOldSnapshots(10);
+    assert(store.getState().autoBackupSnapshots.length === 10, '清理后保留10个快照');
+
+    const latest = store.getState().getLatestSnapshot();
+    assert(latest?.name.includes('测试快照 1'), '保留最新的10个，第一个是最新的');
+
+    pass('Test 36: 自动快照管理 - 超过限制自动清理旧快照');
+  }
+
+  // 测试37: 回滚 - 快照不存在被拒绝
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const rollbackResult = store.getState().rollbackRestore('non-existent-id');
+    assert(rollbackResult.success === false, '不存在的快照回滚失败');
+    assert(rollbackResult.error === 'snapshot_not_found', '错误类型正确');
+
+    pass('Test 37: 回滚 - 快照不存在被拒绝');
+  }
+
+  // 测试38: 删除快照功能
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const snapshot = store.getState().createAutoSnapshot('待删除快照');
+    assert(store.getState().autoBackupSnapshots.length === 1, '创建了1个快照');
+
+    store.getState().deleteSnapshot(snapshot.id);
+    assert(store.getState().autoBackupSnapshots.length === 0, '快照已删除');
+
+    pass('Test 38: 删除快照功能正常');
+  }
+
+  // 测试39: 历史页留痕 - 备份恢复相关操作全部记录
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    store.getState().login('nurse-001', '123456');
+
+    const backup = store.getState().exportBackup();
+    store.getState().previewRestore(backup);
+    store.getState().executeRestore(backup);
+
+    store.getState().login('nurse-001', '123456');
+
+    const latestSnapshot = store.getState().getLatestSnapshot();
+    assert(latestSnapshot !== null, '存在最新快照');
+
+    store.getState().rollbackRestore(latestSnapshot!.id);
+
+    const logTypes = store.getState().operationLogs.map((l) => l.type);
+    assert(logTypes.includes('backup_export'), '包含 backup_export 日志');
+    assert(logTypes.includes('backup_restore_preview'), '包含 backup_restore_preview 日志');
+    assert(logTypes.includes('backup_auto_snapshot'), '包含 backup_auto_snapshot 日志');
+    assert(logTypes.includes('backup_restore'), '包含 backup_restore 日志');
+    assert(logTypes.includes('backup_restore_rollback'), '包含 backup_restore_rollback 日志');
+
+    const restoreOp = store.getState().operationLogs.find((l) => l.type === 'backup_restore');
+    assert(restoreOp?.operatorId === 'nurse-001', '操作人正确');
+    assert(restoreOp?.operatorName === '张管理', '操作人姓名正确');
+    assert(restoreOp?.targetType === 'system', '目标类型正确');
+    assert(restoreOp?.isAbnormal === false, '正常操作不标记异常');
+
+    pass('Test 39: 历史页留痕 - 所有备份恢复操作完整记录，可在历史页查看');
+  }
+
+  // 测试40: 持久化一致性 - 快照和日志刷新后仍在
+  {
+    const store1 = createCleanStore();
+    store1.getState().importSampleData();
+    store1.getState().login('nurse-001', '123456');
+
+    const backup = store1.getState().exportBackup();
+    store1.getState().executeRestore(backup);
+
+    const s1 = store1.getState();
+    const serializableKeys = [
+      'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
+      'appointments', 'admissions', 'careNotes', 'operationLogs',
+      'abnormalRecords', 'autoBackupSnapshots', 'currentUserId',
+    ] as const;
+
+    const snapshot = JSON.stringify(
+      Object.fromEntries(serializableKeys.map((k) => [k, s1[k]])),
+    );
+
+    const store2 = createCleanStore();
+    const restored = JSON.parse(snapshot);
+    store2.setState(restored);
+    const user = (restored.nurses ?? []).find((n: any) => n.id === restored.currentUserId) || null;
+    store2.setState({ currentUser: user, currentNurse: user });
+
+    const s2 = store2.getState();
+
+    for (const k of serializableKeys) {
+      assertEqual(
+        JSON.stringify(s2[k]),
+        JSON.stringify(restored[k]),
+        `${k} 持久化还原一致`,
+      );
+    }
+
+    assert(s2.autoBackupSnapshots.length > 0, 'autoBackupSnapshots 持久化成功');
+    assert(s2.operationLogs.some((l) => l.type === 'backup_restore'), '备份恢复日志持久化成功');
+
+    pass('Test 40: 持久化一致性 - 快照和日志刷新/重开后仍然存在');
+  }
+
   // ───────── 测试汇总 ─────────
   section('测试汇总');
 

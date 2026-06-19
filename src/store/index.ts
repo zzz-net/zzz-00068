@@ -19,6 +19,16 @@ import type {
   BedStatus,
   NurseRole,
   BedType,
+  BackupFile,
+  BackupData,
+  RestorePreview,
+  AutoBackupSnapshot,
+  RestoreResult,
+  RollbackResult,
+  RestoreDiff,
+  EntityDiff,
+  ValidationIssue,
+  BackupRestoreEntity,
 } from '../types';
 import { sampleData } from '../data/sampleData';
 import { parseLocalTime } from '../lib/utils';
@@ -40,6 +50,7 @@ type PersistedState = {
   careNotes: CareNote[];
   operationLogs: OperationLog[];
   abnormalRecords: AbnormalRecord[];
+  autoBackupSnapshots: AutoBackupSnapshot[];
 };
 
 type AppState = PersistedState & {
@@ -92,6 +103,15 @@ type AppState = PersistedState & {
   importSampleData: () => void;
   exportDailyReport: (dateStr: string) => string;
   resetAllData: () => void;
+
+  exportBackup: () => BackupFile;
+  previewRestore: (backupFile: BackupFile) => RestorePreview;
+  executeRestore: (backupFile: BackupFile) => RestoreResult;
+  rollbackRestore: (snapshotId: string) => RollbackResult;
+  createAutoSnapshot: (reason: string) => AutoBackupSnapshot;
+  getLatestSnapshot: () => AutoBackupSnapshot | null;
+  deleteSnapshot: (snapshotId: string) => void;
+  clearOldSnapshots: (maxCount?: number) => void;
 };
 
 type StoreGet = () => AppState;
@@ -111,6 +131,7 @@ const initialPersisted: PersistedState = {
   careNotes: [],
   operationLogs: [],
   abnormalRecords: [],
+  autoBackupSnapshots: [],
 };
 
 function deriveCurrentUser(state: PersistedState): Nurse | null {
@@ -1078,6 +1099,381 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         currentNurse: null,
       });
     },
+
+    exportBackup: (): BackupFile => {
+      const state = get();
+      const backupData: BackupData = {
+        beds: JSON.parse(JSON.stringify(state.beds)),
+        nurses: JSON.parse(JSON.stringify(state.nurses)),
+        isolationRules: JSON.parse(JSON.stringify(state.isolationRules)),
+        timeSlots: JSON.parse(JSON.stringify(state.timeSlots)),
+        patients: JSON.parse(JSON.stringify(state.patients)),
+        appointments: JSON.parse(JSON.stringify(state.appointments)),
+        admissions: JSON.parse(JSON.stringify(state.admissions)),
+        careNotes: JSON.parse(JSON.stringify(state.careNotes)),
+        operationLogs: JSON.parse(JSON.stringify(state.operationLogs)),
+        abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
+      };
+      const backupFile: BackupFile = {
+        version: 'v1',
+        exportedAt: new Date().toISOString(),
+        data: backupData,
+      };
+      helpers.opLog('backup_export', 'system', '导出备份文件');
+      return backupFile;
+    },
+
+    previewRestore: (backupFile: BackupFile): RestorePreview => {
+      const state = get();
+      const currentUser = state.currentUser;
+
+      const issues: ValidationIssue[] = [];
+
+      if (!currentUser || currentUser.role !== 'admin') {
+        issues.push({
+          type: 'backup_permission_denied',
+          severity: 'error',
+          message: '只有管理员可以执行数据恢复操作',
+        });
+      }
+
+      if (!backupFile.version || !['v1'].includes(backupFile.version)) {
+        issues.push({
+          type: 'backup_version_unknown',
+          severity: 'error',
+          message: `无法识别的备份版本: ${backupFile.version || '未知'}，仅支持 v1 版本`,
+        });
+      }
+
+      if (!backupFile.exportedAt) {
+        issues.push({
+          type: 'backup_missing_required_field',
+          severity: 'error',
+          message: '备份文件缺少导出时间字段',
+        });
+      }
+
+      const data = backupFile.data;
+      if (!data) {
+        issues.push({
+          type: 'backup_missing_required_field',
+          severity: 'error',
+          message: '备份文件缺少数据字段',
+        });
+      } else {
+        const requiredFields: (keyof BackupData)[] = ['beds', 'nurses', 'patients', 'appointments', 'admissions'];
+        for (const field of requiredFields) {
+          if (!Array.isArray(data[field])) {
+            issues.push({
+              type: 'backup_missing_required_field',
+              severity: 'error',
+              message: `备份文件缺少必需字段: ${field}`,
+            });
+          }
+        }
+
+        if (Array.isArray(data.beds)) {
+          const bedNumberSet = new Set<string>();
+          const duplicateBeds: string[] = [];
+          for (const bed of data.beds) {
+            if (!bed.bedNumber) {
+              issues.push({
+                type: 'backup_missing_required_field',
+                severity: 'error',
+                message: `床位 ${bed.id || '未知'} 缺少床位编号`,
+              });
+            } else if (bedNumberSet.has(bed.bedNumber)) {
+              duplicateBeds.push(bed.bedNumber);
+            } else {
+              bedNumberSet.add(bed.bedNumber);
+            }
+          }
+          if (duplicateBeds.length > 0) {
+            issues.push({
+              type: 'backup_bed_number_conflict',
+              severity: 'error',
+              message: `备份文件中存在重复的床位编号`,
+              details: duplicateBeds,
+            });
+          }
+        }
+
+        if (Array.isArray(data.admissions)) {
+          const inBedPatients = new Map<string, string[]>();
+          for (const adm of data.admissions) {
+            if (adm.status === 'in_bed') {
+              if (!inBedPatients.has(adm.patientId)) {
+                inBedPatients.set(adm.patientId, []);
+              }
+              inBedPatients.get(adm.patientId)!.push(adm.bedId);
+            }
+          }
+          const duplicateAdmissions: string[] = [];
+          for (const [patientId, bedIds] of inBedPatients) {
+            if (bedIds.length > 1) {
+              const patient = data.patients?.find((p) => p.id === patientId);
+              duplicateAdmissions.push(
+                `患者 ${patient?.name || patientId} 同时在 ${bedIds.length} 个床位`,
+              );
+            }
+          }
+          if (duplicateAdmissions.length > 0) {
+            issues.push({
+              type: 'backup_patient_duplicate_admission',
+              severity: 'error',
+              message: `备份文件中存在同一患者同时在多个床位的情况`,
+              details: duplicateAdmissions,
+            });
+          }
+        }
+      }
+
+      const dataOverview: Record<BackupRestoreEntity, number> = {
+        beds: data?.beds?.length ?? 0,
+        nurses: data?.nurses?.length ?? 0,
+        isolationRules: data?.isolationRules?.length ?? 0,
+        timeSlots: data?.timeSlots?.length ?? 0,
+        patients: data?.patients?.length ?? 0,
+        appointments: data?.appointments?.length ?? 0,
+        admissions: data?.admissions?.length ?? 0,
+        careNotes: data?.careNotes?.length ?? 0,
+        operationLogs: data?.operationLogs?.length ?? 0,
+        abnormalRecords: data?.abnormalRecords?.length ?? 0,
+      };
+
+      const entityKeys: BackupRestoreEntity[] = [
+        'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
+        'appointments', 'admissions', 'careNotes', 'operationLogs', 'abnormalRecords',
+      ];
+
+      const diff: RestoreDiff = {} as RestoreDiff;
+      for (const key of entityKeys) {
+        const current = state[key] as any[];
+        const backup = (data?.[key] as any[]) ?? [];
+        const currentIds = new Set(current.map((item) => item.id));
+        const backupIds = new Set(backup.map((item) => item.id));
+
+        let added = 0, updated = 0, deleted = 0;
+        for (const item of backup) {
+          if (!currentIds.has(item.id)) {
+            added++;
+          } else {
+            const currentItem = current.find((c) => c.id === item.id);
+            if (JSON.stringify(currentItem) !== JSON.stringify(item)) {
+              updated++;
+            }
+          }
+        }
+        for (const id of currentIds) {
+          if (!backupIds.has(id)) {
+            deleted++;
+          }
+        }
+        diff[key] = { added, updated, deleted };
+      }
+
+      const canRestore = issues.filter((i) => i.severity === 'error').length === 0;
+
+      helpers.opLog(
+        'backup_restore_preview',
+        'system',
+        `预检备份文件: ${backupFile.version}, 导出时间: ${backupFile.exportedAt}`,
+        { isAbnormal: !canRestore },
+      );
+
+      return {
+        version: backupFile.version,
+        exportedAt: backupFile.exportedAt,
+        dataOverview,
+        diff,
+        issues,
+        canRestore,
+      };
+    },
+
+    executeRestore: (backupFile: BackupFile): RestoreResult => {
+      const state = get();
+      const currentUser = state.currentUser;
+
+      if (!currentUser || currentUser.role !== 'admin') {
+        return {
+          success: false,
+          message: '只有管理员可以执行数据恢复操作',
+          error: 'permission_denied',
+        };
+      }
+
+      const preview = state.previewRestore(backupFile);
+      if (!preview.canRestore) {
+        const errors = preview.issues.filter((i) => i.severity === 'error').map((i) => i.message);
+        return {
+          success: false,
+          message: `备份文件校验失败: ${errors.join('; ')}`,
+          error: 'validation_failed',
+        };
+      }
+
+      const snapshot = state.createAutoSnapshot('恢复前自动备份');
+
+      const data = backupFile.data;
+      set({
+        beds: JSON.parse(JSON.stringify(data.beds ?? [])),
+        nurses: JSON.parse(JSON.stringify(data.nurses ?? [])),
+        isolationRules: JSON.parse(JSON.stringify(data.isolationRules ?? [])),
+        timeSlots: JSON.parse(JSON.stringify(data.timeSlots ?? [])),
+        patients: JSON.parse(JSON.stringify(data.patients ?? [])),
+        appointments: JSON.parse(JSON.stringify(data.appointments ?? [])),
+        admissions: JSON.parse(JSON.stringify(data.admissions ?? [])),
+        careNotes: JSON.parse(JSON.stringify(data.careNotes ?? [])),
+        abnormalRecords: JSON.parse(JSON.stringify(data.abnormalRecords ?? [])),
+        currentUserId: null,
+        currentUser: null,
+        currentNurse: null,
+      });
+
+      const newState = get();
+      const restoreLog: OperationLog = {
+        id: genId(),
+        type: 'backup_restore',
+        operatorId: currentUser.id,
+        operatorName: currentUser.name,
+        targetType: 'system',
+        detail: `数据恢复成功，备份版本: ${backupFile.version}，导出时间: ${backupFile.exportedAt}，自动快照ID: ${snapshot.id}`,
+        timestamp: Date.now(),
+        isAbnormal: false,
+      };
+      set({
+        operationLogs: [restoreLog, ...newState.operationLogs],
+      });
+
+      state.clearOldSnapshots(10);
+
+      return {
+        success: true,
+        message: '数据恢复成功',
+        snapshotId: snapshot.id,
+      };
+    },
+
+    rollbackRestore: (snapshotId: string): RollbackResult => {
+      const state = get();
+      const currentUser = state.currentUser;
+
+      if (!currentUser || currentUser.role !== 'admin') {
+        return {
+          success: false,
+          message: '只有管理员可以执行回滚操作',
+          error: 'permission_denied',
+        };
+      }
+
+      const snapshot = state.autoBackupSnapshots.find((s) => s.id === snapshotId);
+      if (!snapshot) {
+        return {
+          success: false,
+          message: `未找到快照: ${snapshotId}`,
+          error: 'snapshot_not_found',
+        };
+      }
+
+      const beforeRollbackSnapshot = state.createAutoSnapshot('回滚前自动备份');
+
+      const data = snapshot.data;
+      set({
+        beds: JSON.parse(JSON.stringify(data.beds ?? [])),
+        nurses: JSON.parse(JSON.stringify(data.nurses ?? [])),
+        isolationRules: JSON.parse(JSON.stringify(data.isolationRules ?? [])),
+        timeSlots: JSON.parse(JSON.stringify(data.timeSlots ?? [])),
+        patients: JSON.parse(JSON.stringify(data.patients ?? [])),
+        appointments: JSON.parse(JSON.stringify(data.appointments ?? [])),
+        admissions: JSON.parse(JSON.stringify(data.admissions ?? [])),
+        careNotes: JSON.parse(JSON.stringify(data.careNotes ?? [])),
+        abnormalRecords: JSON.parse(JSON.stringify(data.abnormalRecords ?? [])),
+        currentUserId: null,
+        currentUser: null,
+        currentNurse: null,
+      });
+
+      const newState = get();
+      const rollbackLog: OperationLog = {
+        id: genId(),
+        type: 'backup_restore_rollback',
+        operatorId: currentUser.id,
+        operatorName: currentUser.name,
+        targetType: 'system',
+        detail: `数据回滚成功，快照ID: ${snapshotId}，快照名称: ${snapshot.name}，回滚前快照ID: ${beforeRollbackSnapshot.id}`,
+        timestamp: Date.now(),
+        isAbnormal: false,
+      };
+      set({
+        operationLogs: [rollbackLog, ...newState.operationLogs],
+      });
+
+      return {
+        success: true,
+        message: '数据回滚成功',
+      };
+    },
+
+    createAutoSnapshot: (reason: string): AutoBackupSnapshot => {
+      const state = get();
+      const snapshot: AutoBackupSnapshot = {
+        id: genId(),
+        createdAt: Date.now(),
+        name: `${reason} - ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+        data: {
+          beds: JSON.parse(JSON.stringify(state.beds)),
+          nurses: JSON.parse(JSON.stringify(state.nurses)),
+          isolationRules: JSON.parse(JSON.stringify(state.isolationRules)),
+          timeSlots: JSON.parse(JSON.stringify(state.timeSlots)),
+          patients: JSON.parse(JSON.stringify(state.patients)),
+          appointments: JSON.parse(JSON.stringify(state.appointments)),
+          admissions: JSON.parse(JSON.stringify(state.admissions)),
+          careNotes: JSON.parse(JSON.stringify(state.careNotes)),
+          operationLogs: JSON.parse(JSON.stringify(state.operationLogs)),
+          abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
+        },
+      };
+
+      const snapshotLog: OperationLog = {
+        id: genId(),
+        type: 'backup_auto_snapshot',
+        operatorId: state.currentUser?.id ?? 'system',
+        operatorName: state.currentUser?.name ?? '系统',
+        targetType: 'system',
+        detail: `创建自动快照: ${snapshot.name}，快照ID: ${snapshot.id}`,
+        timestamp: Date.now(),
+        isAbnormal: false,
+      };
+
+      set({
+        autoBackupSnapshots: [snapshot, ...state.autoBackupSnapshots],
+        operationLogs: [snapshotLog, ...state.operationLogs],
+      });
+
+      return snapshot;
+    },
+
+    getLatestSnapshot: (): AutoBackupSnapshot | null => {
+      const state = get();
+      return state.autoBackupSnapshots[0] ?? null;
+    },
+
+    deleteSnapshot: (snapshotId: string): void => {
+      const state = get();
+      set({
+        autoBackupSnapshots: state.autoBackupSnapshots.filter((s) => s.id !== snapshotId),
+      });
+    },
+
+    clearOldSnapshots: (maxCount: number = 10): void => {
+      const state = get();
+      if (state.autoBackupSnapshots.length > maxCount) {
+        set({
+          autoBackupSnapshots: state.autoBackupSnapshots.slice(0, maxCount),
+        });
+      }
+    },
   };
 };
 
@@ -1092,6 +1488,7 @@ const persistedKeys: (keyof PersistedState)[] = [
   'careNotes',
   'operationLogs',
   'abnormalRecords',
+  'autoBackupSnapshots',
   'currentUserId',
 ];
 

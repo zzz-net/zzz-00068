@@ -121,7 +121,12 @@ export type OperationType =
   | 'bed_config_change'
   | 'role_config_change'
   | 'data_import'
-  | 'data_export';
+  | 'data_export'
+  | 'backup_export'
+  | 'backup_restore_preview'
+  | 'backup_restore'
+  | 'backup_restore_rollback'
+  | 'backup_auto_snapshot';
 
 export type OperationTargetType =
   | 'appointment'
@@ -154,7 +159,12 @@ export type AbnormalType =
   | 'discharge_before_admit'
   | 'force_release_denied'
   | 'isolation_violation'
-  | 'data_conflict';
+  | 'data_conflict'
+  | 'backup_version_unknown'
+  | 'backup_bed_number_conflict'
+  | 'backup_patient_duplicate_admission'
+  | 'backup_missing_required_field'
+  | 'backup_permission_denied';
 
 export interface AbnormalRecord {
   id: string;
@@ -171,5 +181,91 @@ export interface AbnormalRecord {
 
 export interface ValidationResult {
   success: boolean;
+  error?: string;
+}
+
+export type BackupRestoreEntity =
+  | 'beds'
+  | 'nurses'
+  | 'isolationRules'
+  | 'timeSlots'
+  | 'patients'
+  | 'appointments'
+  | 'admissions'
+  | 'careNotes'
+  | 'operationLogs'
+  | 'abnormalRecords';
+
+export interface BackupData {
+  beds: Bed[];
+  nurses: Nurse[];
+  isolationRules: IsolationRule[];
+  timeSlots: TimeSlot[];
+  patients: Patient[];
+  appointments: Appointment[];
+  admissions: Admission[];
+  careNotes: CareNote[];
+  operationLogs: OperationLog[];
+  abnormalRecords: AbnormalRecord[];
+}
+
+export interface BackupFile {
+  version: string;
+  exportedAt: string;
+  data: BackupData;
+}
+
+export interface EntityDiff {
+  added: number;
+  updated: number;
+  deleted: number;
+}
+
+export interface RestoreDiff {
+  beds: EntityDiff;
+  nurses: EntityDiff;
+  isolationRules: EntityDiff;
+  timeSlots: EntityDiff;
+  patients: EntityDiff;
+  appointments: EntityDiff;
+  admissions: EntityDiff;
+  careNotes: EntityDiff;
+  operationLogs: EntityDiff;
+  abnormalRecords: EntityDiff;
+}
+
+export interface ValidationIssue {
+  type: AbnormalType;
+  severity: 'error' | 'warning';
+  message: string;
+  details?: string[];
+}
+
+export interface RestorePreview {
+  version: string;
+  exportedAt: string;
+  dataOverview: Record<BackupRestoreEntity, number>;
+  diff: RestoreDiff;
+  issues: ValidationIssue[];
+  canRestore: boolean;
+}
+
+export interface AutoBackupSnapshot {
+  id: string;
+  createdAt: number;
+  data: BackupData;
+  name: string;
+}
+
+export interface RestoreResult {
+  success: boolean;
+  message: string;
+  snapshotId?: string;
+  error?: string;
+}
+
+export interface RollbackResult {
+  success: boolean;
+  message: string;
   error?: string;
 }

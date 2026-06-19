@@ -23,6 +23,14 @@ import {
   Users,
   Activity,
   FileWarning,
+  Download,
+  Upload,
+  RotateCcw,
+  FileJson,
+  Eye,
+  RefreshCw,
+  Database,
+  Archive,
 } from 'lucide-react';
 import { useAppStore } from '@/store';
 import { useToastStore } from '@/store/toast';
@@ -40,6 +48,11 @@ const OPERATION_LABELS: Record<OperationType, { label: string; icon: any; color:
   role_config_change: { label: '角色配置', icon: Users, color: 'text-pink-600 bg-pink-50 border-pink-200' },
   data_import: { label: '数据导入', icon: ArrowLeft, color: 'text-teal-600 bg-teal-50 border-teal-200' },
   data_export: { label: '数据导出', icon: FileText, color: 'text-cyan-600 bg-cyan-50 border-cyan-200' },
+  backup_export: { label: '备份导出', icon: Download, color: 'text-blue-600 bg-blue-50 border-blue-200' },
+  backup_restore_preview: { label: '备份预检', icon: Eye, color: 'text-indigo-600 bg-indigo-50 border-indigo-200' },
+  backup_restore: { label: '备份恢复', icon: Upload, color: 'text-purple-600 bg-purple-50 border-purple-200' },
+  backup_restore_rollback: { label: '恢复回滚', icon: RotateCcw, color: 'text-amber-600 bg-amber-50 border-amber-200' },
+  backup_auto_snapshot: { label: '自动快照', icon: Archive, color: 'text-teal-600 bg-teal-50 border-teal-200' },
 };
 
 const ABNORMAL_LABELS: Record<AbnormalType, { label: string; icon: any; color: string }> = {
@@ -48,6 +61,11 @@ const ABNORMAL_LABELS: Record<AbnormalType, { label: string; icon: any; color: s
   force_release_denied: { label: '强制释放被拒', icon: ShieldAlert, color: 'text-rose-700 bg-rose-50 border-rose-200' },
   isolation_violation: { label: '隔离违规', icon: Bug, color: 'text-purple-700 bg-purple-50 border-purple-200' },
   data_conflict: { label: '数据冲突', icon: FileWarning, color: 'text-amber-700 bg-amber-50 border-amber-200' },
+  backup_version_unknown: { label: '备份版本未知', icon: FileJson, color: 'text-red-700 bg-red-50 border-red-200' },
+  backup_bed_number_conflict: { label: '床位编号冲突', icon: Database, color: 'text-red-700 bg-red-50 border-red-200' },
+  backup_patient_duplicate_admission: { label: '患者重复在床', icon: Users, color: 'text-red-700 bg-red-50 border-red-200' },
+  backup_missing_required_field: { label: '缺少必需字段', icon: AlertCircle, color: 'text-red-700 bg-red-50 border-red-200' },
+  backup_permission_denied: { label: '无操作权限', icon: ShieldAlert, color: 'text-red-700 bg-red-50 border-red-200' },
 };
 
 function formatDateTime(ts: number): string {

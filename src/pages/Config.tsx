@@ -4,7 +4,7 @@ import { useAppStore } from '@/store';
 import { useToastStore } from '@/store/toast';
 import RoleGate from '@/components/RoleGate';
 import StatusBadge from '@/components/StatusBadge';
-import type { BedType, NurseRole, BedStatus } from '@/types';
+import type { BedType, NurseRole, BedStatus, BackupFile, RestorePreview, AutoBackupSnapshot } from '@/types';
 import {
   LayoutGrid,
   ClipboardList,
@@ -28,6 +28,17 @@ import {
   Save,
   ChevronDown,
   KeyRound,
+  FileJson,
+  Eye,
+  RefreshCw,
+  Archive,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  AlertCircle,
+  CheckCircle2,
+  Info,
+  ClockArrowUp,
 } from 'lucide-react';
 import { cn, getTodayStr } from '@/lib/utils';
 
@@ -950,12 +961,24 @@ function DataTab() {
     importSampleData, resetAllData,
     beds, nurses, isolationRules, timeSlots, patients, appointments,
     admissions, careNotes, operationLogs, abnormalRecords,
+    autoBackupSnapshots, currentUser,
+    exportBackup, previewRestore, executeRestore, rollbackRestore,
+    getLatestSnapshot, clearOldSnapshots,
   } = useAppStore();
   const { showToast } = useToastStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [confirmImport, setConfirmImport] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetStep, setResetStep] = useState(0);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [showRollbackModal, setShowRollbackModal] = useState(false);
+  const [restorePreview, setRestorePreview] = useState<RestorePreview | null>(null);
+  const [pendingBackupFile, setPendingBackupFile] = useState<BackupFile | null>(null);
+  const [selectedSnapshot, setSelectedSnapshot] = useState<AutoBackupSnapshot | null>(null);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [isRollingBack, setIsRollingBack] = useState(false);
+
+  const isAdmin = currentUser?.role === 'admin';
 
   const totalCounts = {
     beds: beds.length, nurses: nurses.length, isolationRules: isolationRules.length,
@@ -971,11 +994,12 @@ function DataTab() {
   };
 
   const handleExport = () => {
-    const backupData = {
-      version: 'v1', exportedAt: new Date().toISOString(),
-      data: { beds, nurses, isolationRules, timeSlots, patients, appointments, admissions, careNotes, operationLogs, abnormalRecords },
-    };
-    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+    if (!isAdmin) {
+      showToast('只有管理员可以导出备份', 'error');
+      return;
+    }
+    const backupFile = exportBackup();
+    const blob = new Blob([JSON.stringify(backupFile, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     const today = getTodayStr();
@@ -988,7 +1012,13 @@ function DataTab() {
     showToast('备份导出成功', 'success');
   };
 
-  const handleRestoreClick = () => fileInputRef.current?.click();
+  const handleRestoreClick = () => {
+    if (!isAdmin) {
+      showToast('只有管理员可以恢复备份', 'error');
+      return;
+    }
+    fileInputRef.current?.click();
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -997,21 +1027,11 @@ function DataTab() {
     reader.onload = (ev) => {
       try {
         const content = ev.target?.result as string;
-        const parsed = JSON.parse(content);
-        if (!parsed.data) {
-          showToast('备份文件格式无效', 'error');
-          return;
-        }
-        const d = parsed.data;
-        localStorage.setItem('dayward-board:v1', JSON.stringify({
-          beds: d.beds ?? [], nurses: d.nurses ?? [], isolationRules: d.isolationRules ?? [],
-          timeSlots: d.timeSlots ?? [], patients: d.patients ?? [], appointments: d.appointments ?? [],
-          admissions: d.admissions ?? [], careNotes: d.careNotes ?? [],
-          operationLogs: d.operationLogs ?? [], abnormalRecords: d.abnormalRecords ?? [],
-          currentUserId: null,
-        }));
-        showToast('数据恢复成功，即将刷新页面', 'success');
-        setTimeout(() => window.location.reload(), 1000);
+        const parsed = JSON.parse(content) as BackupFile;
+        setPendingBackupFile(parsed);
+        const preview = previewRestore(parsed);
+        setRestorePreview(preview);
+        setShowPreviewModal(true);
       } catch {
         showToast('文件解析失败，请检查备份文件', 'error');
       }
@@ -1020,7 +1040,63 @@ function DataTab() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  const handleConfirmRestore = async () => {
+    if (!pendingBackupFile || !restorePreview?.canRestore || !isAdmin) return;
+
+    setIsRestoring(true);
+    try {
+      const result = executeRestore(pendingBackupFile);
+      if (result.success) {
+        showToast(`${result.message}，自动快照ID: ${result.snapshotId?.slice(0, 8)}...`, 'success');
+        setShowPreviewModal(false);
+        setPendingBackupFile(null);
+        setRestorePreview(null);
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        showToast(result.message, 'error');
+      }
+    } catch (e) {
+      showToast('恢复失败：' + (e as Error).message, 'error');
+    } finally {
+      setIsRestoring(false);
+    }
+  };
+
+  const handleRollbackClick = (snapshot: AutoBackupSnapshot) => {
+    if (!isAdmin) {
+      showToast('只有管理员可以回滚', 'error');
+      return;
+    }
+    setSelectedSnapshot(snapshot);
+    setShowRollbackModal(true);
+  };
+
+  const handleConfirmRollback = async () => {
+    if (!selectedSnapshot || !isAdmin) return;
+
+    setIsRollingBack(true);
+    try {
+      const result = rollbackRestore(selectedSnapshot.id);
+      if (result.success) {
+        showToast(result.message, 'success');
+        setShowRollbackModal(false);
+        setSelectedSnapshot(null);
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        showToast(result.message, 'error');
+      }
+    } catch (e) {
+      showToast('回滚失败：' + (e as Error).message, 'error');
+    } finally {
+      setIsRollingBack(false);
+    }
+  };
+
   const handleReset = () => {
+    if (!isAdmin) {
+      showToast('只有管理员可以清空数据', 'error');
+      return;
+    }
     if (resetStep === 0) {
       setResetStep(1);
       return;
@@ -1029,6 +1105,20 @@ function DataTab() {
     showToast('所有数据已清空', 'success');
     setConfirmReset(false);
     setResetStep(0);
+  };
+
+  const formatDateTime = (isoStr: string) => {
+    return new Date(isoStr).toLocaleString('zh-CN', { hour12: false });
+  };
+
+  const formatTimestamp = (ts: number) => {
+    return new Date(ts).toLocaleString('zh-CN', { hour12: false });
+  };
+
+  const entityLabels: Record<string, string> = {
+    beds: '床位', nurses: '护士', isolationRules: '隔离规则', timeSlots: '时段配置',
+    patients: '患者', appointments: '预约', admissions: '在床记录', careNotes: '护理记录',
+    operationLogs: '操作日志', abnormalRecords: '异常记录',
   };
 
   const dataItems = [
@@ -1057,6 +1147,8 @@ function DataTab() {
     red: 'bg-red-50 text-red-700 border-red-100',
   };
 
+  const latestSnapshot = getLatestSnapshot();
+
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
@@ -1073,6 +1165,31 @@ function DataTab() {
         </div>
       </div>
 
+      {latestSnapshot && (
+        <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-2xl border border-indigo-100 shadow-sm p-5">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-100 flex items-center justify-center">
+                <ClockArrowUp className="w-5 h-5 text-indigo-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-800">最近自动快照</h3>
+                <p className="text-xs text-gray-500 mt-0.5">{latestSnapshot.name}</p>
+                <p className="text-xs text-gray-400 mt-1">创建时间: {formatTimestamp(latestSnapshot.createdAt)}</p>
+              </div>
+            </div>
+            {isAdmin && (
+              <button
+                onClick={() => handleRollbackClick(latestSnapshot)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-white border border-indigo-200 text-indigo-600 rounded-lg font-medium text-sm hover:bg-indigo-50 transition-colors"
+              >
+                <RotateCcw className="w-4 h-4" />回滚到此状态
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
           <div className="flex items-center gap-3 mb-3">
@@ -1085,7 +1202,7 @@ function DataTab() {
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-3">
               <div className="flex items-start gap-2 text-amber-800">
                 <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                <div><p className="font-semibold text-sm">确认导入样例数据？</p><p className="text-xs mt-0.5">此操作将覆盖现有全部数据</p></div>
+                <div><p className="font-semibold text-sm">确认导入样例数据？</p><p className="text-xs mt-0.5">此操作将覆盖现有全部数据，恢复前将自动备份</p></div>
               </div>
               <div className="flex gap-2">
                 <button onClick={() => setConfirmImport(false)} className="flex-1 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50">取消</button>
@@ -1100,19 +1217,29 @@ function DataTab() {
             <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center"><Download className="w-5 h-5 text-blue-600" /></div>
             <div><h3 className="font-bold text-gray-800">完整备份导出</h3><p className="text-xs text-gray-500">导出为 JSON 文件</p></div>
           </div>
-          <button onClick={handleExport} className="w-full py-2.5 bg-blue-500 text-white rounded-lg font-medium text-sm hover:bg-blue-600 transition-colors flex items-center justify-center gap-2">
-            <Download className="w-4 h-4" />导出备份 JSON
+          <button
+            onClick={handleExport}
+            disabled={!isAdmin}
+            className={cn('w-full py-2.5 rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2',
+              isAdmin ? 'bg-blue-500 text-white hover:bg-blue-600' : 'bg-gray-200 text-gray-400 cursor-not-allowed')}
+          >
+            <Download className="w-4 h-4" />{isAdmin ? '导出备份 JSON' : '仅管理员可导出'}
           </button>
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
           <div className="flex items-center gap-3 mb-3">
             <div className="w-10 h-10 rounded-xl bg-purple-100 flex items-center justify-center"><Upload className="w-5 h-5 text-purple-600" /></div>
-            <div><h3 className="font-bold text-gray-800">恢复备份</h3><p className="text-xs text-gray-500">从 JSON 文件恢复</p></div>
+            <div><h3 className="font-bold text-gray-800">恢复备份</h3><p className="text-xs text-gray-500">从 JSON 文件恢复（带预检和回滚）</p></div>
           </div>
           <input ref={fileInputRef} type="file" accept=".json" onChange={handleFileChange} className="hidden" />
-          <button onClick={handleRestoreClick} className="w-full py-2.5 bg-purple-500 text-white rounded-lg font-medium text-sm hover:bg-purple-600 transition-colors flex items-center justify-center gap-2">
-            <Upload className="w-4 h-4" />选择备份文件
+          <button
+            onClick={handleRestoreClick}
+            disabled={!isAdmin}
+            className={cn('w-full py-2.5 rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2',
+              isAdmin ? 'bg-purple-500 text-white hover:bg-purple-600' : 'bg-gray-200 text-gray-400 cursor-not-allowed')}
+          >
+            <Upload className="w-4 h-4" />{isAdmin ? '选择备份文件并预检' : '仅管理员可恢复'}
           </button>
         </div>
 
@@ -1122,8 +1249,13 @@ function DataTab() {
             <div><h3 className="font-bold text-gray-800">清空全部数据</h3><p className="text-xs text-gray-500">不可恢复操作</p></div>
           </div>
           {!confirmReset ? (
-            <button onClick={() => setConfirmReset(true)} className="w-full py-2.5 bg-red-500 text-white rounded-lg font-medium text-sm hover:bg-red-600 transition-colors flex items-center justify-center gap-2">
-              <RotateCcw className="w-4 h-4" />清空全部数据
+            <button
+              onClick={() => setConfirmReset(true)}
+              disabled={!isAdmin}
+              className={cn('w-full py-2.5 rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2',
+                isAdmin ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-gray-200 text-gray-400 cursor-not-allowed')}
+            >
+              <RotateCcw className="w-4 h-4" />{isAdmin ? '清空全部数据' : '仅管理员可操作'}
             </button>
           ) : (
             <div className="bg-red-50 border border-red-200 rounded-lg p-4 space-y-3">
@@ -1149,6 +1281,273 @@ function DataTab() {
           )}
         </div>
       </div>
+
+      {autoBackupSnapshots.length > 0 && (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+          <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+            <Archive className="w-5 h-5 text-indigo-500" />自动快照历史
+            <span className="text-sm font-normal text-gray-500 ml-2">（保留最近 {autoBackupSnapshots.length} 个）</span>
+          </h2>
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {autoBackupSnapshots.map((snapshot) => (
+              <div key={snapshot.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
+                <div className="flex items-center gap-3">
+                  <FileJson className="w-5 h-5 text-gray-400" />
+                  <div>
+                    <p className="text-sm font-medium text-gray-700">{snapshot.name}</p>
+                    <p className="text-xs text-gray-400">ID: {snapshot.id.slice(0, 12)}...</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-gray-500">{formatTimestamp(snapshot.createdAt)}</span>
+                  {isAdmin && (
+                    <button
+                      onClick={() => handleRollbackClick(snapshot)}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-white border border-gray-200 text-gray-600 rounded-md hover:bg-gray-50 transition-colors"
+                    >
+                      <RotateCcw className="w-3 h-3" />回滚
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {showPreviewModal && restorePreview && (
+        <Modal title="备份预检结果" onClose={() => { setShowPreviewModal(false); setPendingBackupFile(null); setRestorePreview(null); }}>
+          <div className="space-y-5">
+            <div className="bg-gray-50 rounded-xl p-4 space-y-3">
+              <div className="flex items-center gap-3">
+                <FileJson className="w-8 h-8 text-purple-500" />
+                <div>
+                  <p className="font-medium text-gray-800">备份版本: {restorePreview.version}</p>
+                  <p className="text-sm text-gray-500">导出时间: {formatDateTime(restorePreview.exportedAt)}</p>
+                </div>
+              </div>
+            </div>
+
+            {restorePreview.issues.length > 0 && (
+              <div className={cn(
+                'rounded-xl p-4 space-y-3',
+                restorePreview.issues.some(i => i.severity === 'error')
+                  ? 'bg-red-50 border border-red-200'
+                  : 'bg-amber-50 border border-amber-200'
+              )}>
+                <div className="flex items-center gap-2">
+                  {restorePreview.issues.some(i => i.severity === 'error') ? (
+                    <AlertCircle className="w-5 h-5 text-red-500" />
+                  ) : (
+                    <AlertTriangle className="w-5 h-5 text-amber-500" />
+                  )}
+                  <h4 className={cn('font-medium',
+                    restorePreview.issues.some(i => i.severity === 'error') ? 'text-red-800' : 'text-amber-800'
+                  )}>
+                    {restorePreview.issues.some(i => i.severity === 'error') ? '存在严重问题，无法恢复' : '存在警告'}
+                  </h4>
+                </div>
+                <ul className="space-y-2">
+                  {restorePreview.issues.map((issue, idx) => (
+                    <li key={idx} className="text-sm">
+                      <span className={cn('font-medium',
+                        issue.severity === 'error' ? 'text-red-700' : 'text-amber-700'
+                      )}>• {issue.message}</span>
+                      {issue.details && issue.details.length > 0 && (
+                        <ul className="mt-1 ml-4 space-y-1 text-xs text-gray-600">
+                          {issue.details.map((detail, i) => (
+                            <li key={i}>- {detail}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div>
+              <h4 className="font-medium text-gray-800 mb-3 flex items-center gap-2">
+                <Eye className="w-4 h-4 text-gray-500" />数据概览
+              </h4>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {Object.entries(restorePreview.dataOverview).map(([key, value]) => (
+                  <div key={key} className="bg-gray-50 rounded-lg p-2 text-center">
+                    <div className="text-xs text-gray-500">{entityLabels[key] || key}</div>
+                    <div className="text-lg font-bold text-gray-800">{value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <h4 className="font-medium text-gray-800 mb-3 flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 text-gray-500" />变更统计
+              </h4>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200">
+                      <th className="text-left py-2 px-3 text-gray-500 font-medium">实体</th>
+                      <th className="text-center py-2 px-3 text-green-600 font-medium">
+                        <TrendingUp className="w-4 h-4 inline mr-1" />新增
+                      </th>
+                      <th className="text-center py-2 px-3 text-blue-600 font-medium">
+                        <RefreshCw className="w-4 h-4 inline mr-1" />覆盖
+                      </th>
+                      <th className="text-center py-2 px-3 text-red-600 font-medium">
+                        <TrendingDown className="w-4 h-4 inline mr-1" />删除
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(restorePreview.diff).map(([key, diff]) => (
+                      <tr key={key} className="border-b border-gray-100">
+                        <td className="py-2 px-3 font-medium text-gray-700">{entityLabels[key] || key}</td>
+                        <td className="text-center py-2 px-3">
+                          {diff.added > 0 ? (
+                            <span className="text-green-600 font-medium">+{diff.added}</span>
+                          ) : (
+                            <Minus className="w-4 h-4 text-gray-300 mx-auto" />
+                          )}
+                        </td>
+                        <td className="text-center py-2 px-3">
+                          {diff.updated > 0 ? (
+                            <span className="text-blue-600 font-medium">~{diff.updated}</span>
+                          ) : (
+                            <Minus className="w-4 h-4 text-gray-300 mx-auto" />
+                          )}
+                        </td>
+                        <td className="text-center py-2 px-3">
+                          {diff.deleted > 0 ? (
+                            <span className="text-red-600 font-medium">-{diff.deleted}</span>
+                          ) : (
+                            <Minus className="w-4 h-4 text-gray-300 mx-auto" />
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <div className="flex items-start gap-2">
+                <Info className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
+                <div className="text-sm text-blue-800">
+                  <p className="font-medium">恢复前将自动创建当前数据快照</p>
+                  <p className="text-xs mt-1 text-blue-600">恢复成功后可从快照列表回滚到此状态</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-100">
+              <button
+                onClick={() => { setShowPreviewModal(false); setPendingBackupFile(null); setRestorePreview(null); }}
+                className="inline-flex items-center gap-1.5 px-5 py-2.5 bg-white border border-gray-200 text-gray-600 rounded-lg font-medium text-sm hover:bg-gray-50 transition-colors"
+              >
+                <X className="w-4 h-4" />取消
+              </button>
+              <button
+                onClick={handleConfirmRestore}
+                disabled={!restorePreview.canRestore || isRestoring}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-5 py-2.5 rounded-lg font-medium text-sm transition-all',
+                  restorePreview.canRestore && !isRestoring
+                    ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-sm hover:from-purple-700 hover:to-indigo-700'
+                    : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                )}
+              >
+                {isRestoring ? (
+                  <><RefreshCw className="w-4 h-4 animate-spin" />恢复中...</>
+                ) : (
+                  <><Check className="w-4 h-4" />确认恢复</>
+                )}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {showRollbackModal && selectedSnapshot && (
+        <Modal title="确认回滚" onClose={() => { setShowRollbackModal(false); setSelectedSnapshot(null); }}>
+          <div className="space-y-5">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="w-6 h-6 text-amber-500 flex-shrink-0" />
+                <div>
+                  <h4 className="font-medium text-amber-800">确认回滚到此快照？</h4>
+                  <p className="text-sm text-amber-700 mt-1">{selectedSnapshot.name}</p>
+                  <p className="text-xs text-amber-600 mt-2">创建时间: {formatTimestamp(selectedSnapshot.createdAt)}</p>
+                  <p className="text-xs text-amber-600 mt-1">快照ID: {selectedSnapshot.id}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 rounded-xl p-4 space-y-2">
+              <h4 className="font-medium text-gray-800 text-sm">快照数据概览</h4>
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 text-xs">
+                <div className="text-center">
+                  <div className="text-gray-500">床位</div>
+                  <div className="font-bold text-gray-800">{selectedSnapshot.data.beds.length}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-gray-500">患者</div>
+                  <div className="font-bold text-gray-800">{selectedSnapshot.data.patients.length}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-gray-500">预约</div>
+                  <div className="font-bold text-gray-800">{selectedSnapshot.data.appointments.length}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-gray-500">在床</div>
+                  <div className="font-bold text-gray-800">{selectedSnapshot.data.admissions.length}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-gray-500">日志</div>
+                  <div className="font-bold text-gray-800">{selectedSnapshot.data.operationLogs.length}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <div className="flex items-start gap-2">
+                <Info className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
+                <div className="text-sm text-blue-800">
+                  <p className="font-medium">回滚前将自动创建当前数据快照</p>
+                  <p className="text-xs mt-1 text-blue-600">回滚后如有问题仍可再次回滚</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-100">
+              <button
+                onClick={() => { setShowRollbackModal(false); setSelectedSnapshot(null); }}
+                className="inline-flex items-center gap-1.5 px-5 py-2.5 bg-white border border-gray-200 text-gray-600 rounded-lg font-medium text-sm hover:bg-gray-50 transition-colors"
+              >
+                <X className="w-4 h-4" />取消
+              </button>
+              <button
+                onClick={handleConfirmRollback}
+                disabled={isRollingBack}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-5 py-2.5 rounded-lg font-medium text-sm transition-all',
+                  !isRollingBack
+                    ? 'bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-sm hover:from-amber-700 hover:to-orange-700'
+                    : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                )}
+              >
+                {isRollingBack ? (
+                  <><RefreshCw className="w-4 h-4 animate-spin" />回滚中...</>
+                ) : (
+                  <><RotateCcw className="w-4 h-4" />确认回滚</>
+                )}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
