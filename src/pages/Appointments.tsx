@@ -21,7 +21,7 @@ import {
   User,
   ChevronDown,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, getTodayStr, addDaysStr } from '@/lib/utils';
 
 type StatusFilter = 'all' | AppointmentStatus;
 
@@ -39,8 +39,8 @@ export default function Appointments() {
   } = useAppStore();
   const { showToast } = useToastStore();
 
-  const today = new Date().toISOString().slice(0, 10);
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const today = getTodayStr();
+  const weekAgo = addDaysStr(today, -7);
 
   const [startDate, setStartDate] = useState(weekAgo);
   const [endDate, setEndDate] = useState(today);

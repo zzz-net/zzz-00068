@@ -75,6 +75,13 @@ export function getTodayStartTs(): number {
   return d.getTime()
 }
 
+export function addDaysStr(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number)
+  const dt = new Date(y, m - 1, d)
+  dt.setDate(dt.getDate() + days)
+  return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate())
+}
+
 export function parseLocalTime(
   dateStr: string,
   hhmm: string,

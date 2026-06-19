@@ -24,7 +24,7 @@ import {
   History,
   LogOut,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, getTodayStr, parseLocalTime } from '@/lib/utils';
 
 export default function NewAppointment() {
   const navigate = useNavigate();
@@ -39,7 +39,7 @@ export default function NewAppointment() {
   } = useAppStore();
   const { showToast } = useToastStore();
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getTodayStr();
 
   const [patientName, setPatientName] = useState('');
   const [gender, setGender] = useState<'male' | 'female'>('male');
@@ -94,10 +94,7 @@ export default function NewAppointment() {
   };
 
   const parseTimeToTs = (dateStr: string, hhmm: string) => {
-    const [h, m] = hhmm.split(':').map(Number);
-    const d = new Date(dateStr + 'T00:00:00');
-    d.setHours(h, m, 0, 0);
-    return d.getTime();
+    return parseLocalTime(dateStr, hhmm);
   };
 
   const overlapCheck = useMemo(() => {

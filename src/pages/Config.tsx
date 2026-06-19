@@ -29,7 +29,7 @@ import {
   ChevronDown,
   KeyRound,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, getTodayStr } from '@/lib/utils';
 
 type ConfigTab = 'beds' | 'isolation' | 'timeslots' | 'nurses' | 'data';
 
@@ -978,7 +978,7 @@ function DataTab() {
     const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getTodayStr();
     a.href = url;
     a.download = `backup-${today}.json`;
     document.body.appendChild(a);

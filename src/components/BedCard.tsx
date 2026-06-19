@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type { Bed, BedType, BedStatus } from '@/types';
 import { useAppStore } from '@/store';
 import { StatusBadge } from '@/components/StatusBadge';
+import { getTodayStr } from '@/lib/utils';
 
 interface BedCardProps {
   bed: Bed;
@@ -46,7 +47,7 @@ export function BedCard({ bed, onClick, selected = false, dateStr }: BedCardProp
 
   const nextAppointment = useMemo(() => {
     const now = Date.now();
-    const today = dateStr ?? new Date().toISOString().slice(0, 10);
+    const today = dateStr ?? getTodayStr();
     return appointments
       .filter(
         (a) =>
