@@ -10,17 +10,14 @@ import type {
   OperationLog,
   AbnormalRecord,
 } from '../types';
+import { getTodayStr, parseLocalTime } from '../lib/utils';
 
+const todayStr = getTodayStr();
 const now = Date.now();
 const dayMs = 24 * 60 * 60 * 1000;
-const today = new Date();
-const todayStr = today.toISOString().slice(0, 10);
 
 function parseTodayTime(hhmm: string): number {
-  const [h, m] = hhmm.split(':').map(Number);
-  const d = new Date(today);
-  d.setHours(h, m, 0, 0);
-  return d.getTime();
+  return parseLocalTime(todayStr, hhmm);
 }
 
 const nurses: Nurse[] = [
@@ -70,42 +67,43 @@ const patients: Patient[] = [
 ];
 
 const appointments: Appointment[] = [
-  { id: 'appointment-001', patientId: 'patient-005', bedId: 'bed-003', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('08:00'), endTime: parseTodayTime('12:00'), isolationRuleId: 'rule-002', status: 'pending', createdBy: 'nurse-004', createdAt: now - 2 * 60 * 60 * 1000 },
-  { id: 'appointment-002', patientId: 'patient-006', bedId: 'bed-007', slotId: 'slot-002', appointmentDate: todayStr, startTime: parseTodayTime('13:00'), endTime: parseTodayTime('17:00'), status: 'admitted', createdBy: 'nurse-005', createdAt: now - 5 * 60 * 60 * 1000 },
-  { id: 'appointment-003', patientId: 'patient-008', bedId: 'bed-006', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('08:30'), endTime: parseTodayTime('12:00'), status: 'completed', createdBy: 'nurse-002', createdAt: now - 8 * 60 * 60 * 1000 },
-  { id: 'appointment-004', patientId: 'patient-007', bedId: 'bed-008', slotId: 'slot-003', appointmentDate: todayStr, startTime: parseTodayTime('17:30'), endTime: parseTodayTime('20:30'), status: 'pending', createdBy: 'nurse-003', createdAt: now - 1 * 60 * 60 * 1000 },
-  { id: 'appointment-005', patientId: 'patient-004', bedId: 'bed-009', slotId: 'slot-002', appointmentDate: todayStr, startTime: parseTodayTime('14:00'), endTime: parseTodayTime('17:00'), status: 'cancelled', createdBy: 'nurse-004', createdAt: now - 12 * 60 * 60 * 1000 },
+  { id: 'appointment-001', patientId: 'patient-001', bedId: 'bed-001', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('08:00'), endTime: parseTodayTime('12:00'), status: 'admitted', createdBy: 'nurse-002', createdAt: now - 4 * dayMs },
+  { id: 'appointment-002', patientId: 'patient-002', bedId: 'bed-002', slotId: 'slot-002', appointmentDate: todayStr, startTime: parseTodayTime('13:00'), endTime: parseTodayTime('17:00'), status: 'admitted', createdBy: 'nurse-003', createdAt: now - 3 * dayMs },
+  { id: 'appointment-003', patientId: 'patient-003', bedId: 'bed-005', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('08:30'), endTime: parseTodayTime('12:00'), isolationRuleId: 'rule-001', status: 'admitted', createdBy: 'nurse-002', createdAt: now - 2 * dayMs },
+  { id: 'appointment-004', patientId: 'patient-005', bedId: 'bed-003', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('09:00'), endTime: parseTodayTime('11:00'), isolationRuleId: 'rule-002', status: 'pending', createdBy: 'nurse-004', createdAt: now - 2 * 60 * 60 * 1000 },
+  { id: 'appointment-005', patientId: 'patient-007', bedId: 'bed-008', slotId: 'slot-003', appointmentDate: todayStr, startTime: parseTodayTime('17:30'), endTime: parseTodayTime('20:30'), status: 'pending', createdBy: 'nurse-003', createdAt: now - 1 * 60 * 60 * 1000 },
+  { id: 'appointment-006', patientId: 'patient-004', bedId: 'bed-009', slotId: 'slot-002', appointmentDate: todayStr, startTime: parseTodayTime('14:00'), endTime: parseTodayTime('17:00'), status: 'cancelled', createdBy: 'nurse-004', createdAt: now - 12 * 60 * 60 * 1000 },
 ];
 
 const admissions: Admission[] = [
-  { id: 'admission-001', appointmentId: 'appointment-001', patientId: 'patient-001', bedId: 'bed-001', admittedAt: now - 3 * dayMs, status: 'in_bed', admittedBy: 'nurse-002', createdAt: now - 3 * dayMs },
-  { id: 'admission-002', appointmentId: 'appointment-002', patientId: 'patient-002', bedId: 'bed-002', admittedAt: now - 2 * dayMs, status: 'in_bed', admittedBy: 'nurse-003', createdAt: now - 2 * dayMs },
-  { id: 'admission-003', appointmentId: 'appointment-003', patientId: 'patient-003', bedId: 'bed-005', admittedAt: now - 1 * dayMs, status: 'discharged', dischargedAt: now - 6 * 60 * 60 * 1000, admittedBy: 'nurse-002', dischargedBy: 'nurse-001', dischargeReason: '病情好转，准予出院', createdAt: now - 1 * dayMs },
+  { id: 'admission-001', appointmentId: 'appointment-001', patientId: 'patient-001', bedId: 'bed-001', admittedAt: parseTodayTime('08:15'), status: 'in_bed', admittedBy: 'nurse-002', createdAt: parseTodayTime('08:15') },
+  { id: 'admission-002', appointmentId: 'appointment-002', patientId: 'patient-002', bedId: 'bed-002', admittedAt: parseTodayTime('13:10'), status: 'in_bed', admittedBy: 'nurse-003', createdAt: parseTodayTime('13:10') },
+  { id: 'admission-003', appointmentId: 'appointment-003', patientId: 'patient-003', bedId: 'bed-005', admittedAt: parseTodayTime('08:45'), status: 'in_bed', admittedBy: 'nurse-002', createdAt: parseTodayTime('08:45') },
 ];
 
 const careNotes: CareNote[] = [
-  { id: 'care-note-001', admissionId: 'admission-001', nurseId: 'nurse-004', content: '患者主诉咳嗽咳痰，遵医嘱予雾化吸入治疗，症状较前缓解。生命体征平稳。', timestamp: now - 2 * dayMs, type: 'treatment', createdAt: now - 2 * dayMs },
-  { id: 'care-note-002', admissionId: 'admission-001', nurseId: 'nurse-005', content: '血压135/85mmHg，心率82次/分，呼吸18次/分，体温36.8℃。神志清楚，精神尚可。', timestamp: now - 20 * 60 * 60 * 1000, type: 'observation', createdAt: now - 20 * 60 * 60 * 1000 },
-  { id: 'care-note-003', admissionId: 'admission-002', nurseId: 'nurse-004', content: '遵医嘱予硝苯地平缓释片30mg口服qd，监测血压波动情况。', timestamp: now - 1 * dayMs, type: 'medication', createdAt: now - 1 * dayMs },
-  { id: 'care-note-004', admissionId: 'admission-002', nurseId: 'nurse-002', content: '患者诉头晕，测血压158/95mmHg，报告值班医师，遵医嘱加服降压药，30分钟后复测142/88mmHg。', timestamp: now - 10 * 60 * 60 * 1000, type: 'abnormal', createdAt: now - 10 * 60 * 60 * 1000 },
-  { id: 'care-note-005', admissionId: 'admission-003', nurseId: 'nurse-003', content: '患者入院时体温38.5℃，伴干咳，予抗病毒治疗及对症处理。', timestamp: now - 1 * dayMs, type: 'treatment', createdAt: now - 1 * dayMs },
-  { id: 'care-note-006', admissionId: 'admission-003', nurseId: 'nurse-005', content: '患者体温恢复正常，呼吸道症状明显改善，核酸检测阴性，符合出院标准。', timestamp: now - 8 * 60 * 60 * 1000, type: 'observation', createdAt: now - 8 * 60 * 60 * 1000 },
+  { id: 'care-note-001', admissionId: 'admission-001', nurseId: 'nurse-004', content: '患者主诉咳嗽咳痰，遵医嘱予雾化吸入治疗，症状较前缓解。生命体征平稳。', timestamp: parseTodayTime('09:30'), type: 'treatment', createdAt: parseTodayTime('09:30') },
+  { id: 'care-note-002', admissionId: 'admission-001', nurseId: 'nurse-005', content: '血压135/85mmHg，心率82次/分，呼吸18次/分，体温36.8℃。神志清楚，精神尚可。', timestamp: parseTodayTime('10:30'), type: 'observation', createdAt: parseTodayTime('10:30') },
+  { id: 'care-note-003', admissionId: 'admission-002', nurseId: 'nurse-004', content: '遵医嘱予硝苯地平缓释片30mg口服qd，监测血压波动情况。', timestamp: parseTodayTime('13:30'), type: 'medication', createdAt: parseTodayTime('13:30') },
+  { id: 'care-note-004', admissionId: 'admission-002', nurseId: 'nurse-002', content: '患者诉头晕，测血压158/95mmHg，报告值班医师，遵医嘱加服降压药，30分钟后复测142/88mmHg。', timestamp: parseTodayTime('14:30'), type: 'abnormal', createdAt: parseTodayTime('14:30') },
+  { id: 'care-note-005', admissionId: 'admission-003', nurseId: 'nurse-003', content: '患者入院时体温38.5℃，伴干咳，予抗病毒治疗及对症处理。', timestamp: parseTodayTime('09:00'), type: 'treatment', createdAt: parseTodayTime('09:00') },
+  { id: 'care-note-006', admissionId: 'admission-003', nurseId: 'nurse-005', content: '隔离护理措施落实，手卫生宣教到位，嘱患者多饮水、卧床休息。', timestamp: parseTodayTime('10:00'), type: 'observation', createdAt: parseTodayTime('10:00') },
 ];
 
 const operationLogs: OperationLog[] = [
   { id: 'op-log-001', type: 'bed_config_change', operatorId: 'nurse-004', operatorName: '赵普通', targetType: 'patient', targetId: 'patient-001', targetName: '陈大伟', detail: '创建患者档案：陈大伟，男，65岁，诊断慢性支气管炎急性加重', timestamp: now - 15 * dayMs, isAbnormal: false },
   { id: 'op-log-002', type: 'appointment_create', operatorId: 'nurse-002', operatorName: '李高级', targetType: 'appointment', targetId: 'appointment-001', targetName: '陈大伟-A-1床预约', detail: '创建预约：患者陈大伟预约A-1床，上午时段', timestamp: now - 4 * dayMs, isAbnormal: false },
-  { id: 'op-log-003', type: 'admission_confirm', operatorId: 'nurse-002', operatorName: '李高级', targetType: 'admission', targetId: 'admission-001', targetName: '陈大伟住院', detail: '确认入院：患者陈大伟入住A-1床', timestamp: now - 3 * dayMs, isAbnormal: false, approvedBy: 'nurse-001' },
-  { id: 'op-log-004', type: 'care_note_add', operatorId: 'nurse-004', operatorName: '赵普通', targetType: 'care_note', targetId: 'care-note-001', targetName: '护理记录', detail: '添加护理记录：admission-001雾化吸入治疗', timestamp: now - 2 * dayMs, isAbnormal: false },
-  { id: 'op-log-005', type: 'discharge_normal', operatorId: 'nurse-001', operatorName: '张管理', targetType: 'admission', targetId: 'admission-003', targetName: '王建国出院', detail: '办理出院：患者王建国病情好转准予出院，A-5床释放', timestamp: now - 6 * 60 * 60 * 1000, isAbnormal: false, approvedBy: 'nurse-001' },
+  { id: 'op-log-003', type: 'admission_confirm', operatorId: 'nurse-002', operatorName: '李高级', targetType: 'admission', targetId: 'admission-001', targetName: '陈大伟住院', detail: '确认入院：患者陈大伟入住A-1床', timestamp: parseTodayTime('08:15'), isAbnormal: false, approvedBy: 'nurse-001' },
+  { id: 'op-log-004', type: 'care_note_add', operatorId: 'nurse-004', operatorName: '赵普通', targetType: 'care_note', targetId: 'care-note-001', targetName: '护理记录', detail: '添加护理记录：admission-001雾化吸入治疗', timestamp: parseTodayTime('09:30'), isAbnormal: false },
+  { id: 'op-log-005', type: 'care_note_add', operatorId: 'nurse-002', operatorName: '李高级', targetType: 'care_note', targetId: 'care-note-004', targetName: '异常护理记录', detail: '添加异常护理记录：刘美丽血压升高处理', timestamp: parseTodayTime('14:30'), isAbnormal: false },
   { id: 'op-log-006', type: 'bed_config_change', operatorId: 'nurse-005', operatorName: '钱普通', targetType: 'bed', targetId: 'bed-004', targetName: 'A-4床', detail: '更新床位状态：A-4床设置为cleaning，进行终末消毒', timestamp: now - 4 * 60 * 60 * 1000, isAbnormal: false },
-  { id: 'op-log-007', type: 'appointment_cancel', operatorId: 'nurse-004', operatorName: '赵普通', targetType: 'appointment', targetId: 'appointment-005', targetName: '赵秀兰-B-9床预约取消', detail: '取消预约：患者赵秀兰个人原因取消B-9床下午预约', timestamp: now - 3 * 60 * 60 * 1000, isAbnormal: false },
-  { id: 'op-log-008', type: 'discharge_force', operatorId: 'nurse-001', operatorName: '张管理', targetType: 'bed', targetId: 'bed-010', targetName: 'B-10床', detail: '强制释放床位：跨区违规操作，超常规释放B-10床', timestamp: now - 2 * 60 * 60 * 1000, isAbnormal: true, abnormalReason: '跨区操作+isolation_violation规则冲突', approvedBy: 'nurse-001' },
+  { id: 'op-log-007', type: 'appointment_cancel', operatorId: 'nurse-004', operatorName: '赵普通', targetType: 'appointment', targetId: 'appointment-006', targetName: '赵秀兰-B-9床预约取消', detail: '取消预约：患者赵秀兰个人原因取消B-9床下午预约', timestamp: now - 3 * 60 * 60 * 1000, isAbnormal: false },
+  { id: 'op-log-008', type: 'discharge_force', operatorId: 'nurse-001', operatorName: '张管理', targetType: 'admission', targetId: 'admission-000', targetName: 'B-10床历史记录', detail: '历史记录：跨区违规操作强制释放B-10床，已由管理员审批', timestamp: now - 2 * 60 * 60 * 1000, isAbnormal: true, abnormalReason: '跨区操作+isolation_violation规则冲突', approvedBy: 'nurse-001' },
 ];
 
 const abnormalRecords: AbnormalRecord[] = [
   { id: 'abnormal-001', type: 'isolation_violation', operationLogId: 'op-log-008', description: '操作涉及跨区床位调动，但耐药菌感染隔离规则禁止跨区，已触发异常告警，需要管理员审核确认。', bedId: 'bed-010', handled: false, createdAt: now - 2 * 60 * 60 * 1000 },
-  { id: 'abnormal-002', type: 'force_release_denied', operationLogId: 'op-log-008', description: '强制释放B-10床操作，已由管理员张管理审批通过，但记录异常留痕备查。', bedId: 'bed-010', handled: true, handledBy: 'nurse-001', handledAt: now - 1 * 60 * 60 * 1000, createdAt: now - 2 * 60 * 60 * 1000 },
+  { id: 'abnormal-002', type: 'force_release_denied', operationLogId: 'op-log-008', description: '历史强制释放B-10床操作，已由管理员张管理审批通过，记录异常留痕备查。', bedId: 'bed-010', handled: true, handledBy: 'nurse-001', handledAt: now - 1 * 60 * 60 * 1000, createdAt: now - 2 * 60 * 60 * 1000 },
 ];
 
 export interface SampleData {
@@ -132,4 +130,17 @@ export const sampleData: SampleData = {
   careNotes,
   operationLogs,
   abnormalRecords,
+};
+
+export const SAMPLE_DATA_COUNTS = {
+  nurses: nurses.length,
+  beds: beds.length,
+  isolationRules: isolationRules.length,
+  timeSlots: timeSlots.length,
+  patients: patients.length,
+  appointments: appointments.length,
+  admissions: admissions.length,
+  careNotes: careNotes.length,
+  operationLogs: operationLogs.length,
+  abnormalRecords: abnormalRecords.length,
 };

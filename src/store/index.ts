@@ -21,6 +21,7 @@ import type {
   BedType,
 } from '../types';
 import { sampleData } from '../data/sampleData';
+import { parseLocalTime } from '../lib/utils';
 
 const STORE_KEY = 'dayward-board:v1';
 
@@ -543,6 +544,26 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const bedNum = get().beds.find((b) => b.id === payload.bedId)
         ?.bedNumber;
 
+      if (payload.endTime <= payload.startTime) {
+        const opLogId = helpers.opLog(
+          'appointment_create',
+          'appointment',
+          '结束时间必须晚于开始时间',
+          {
+            targetName: bedNum,
+            isAbnormal: true,
+            abnormalReason: 'data_conflict',
+          },
+        );
+        helpers.abnRec(
+          'data_conflict',
+          opLogId,
+          '结束时间必须晚于开始时间',
+          { bedId: payload.bedId },
+        );
+        return { success: false, error: '结束时间必须晚于开始时间' };
+      }
+
       const overlapCheck = validateAppointmentOverlap(
         get(),
         payload.bedId,
@@ -652,9 +673,61 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const nurse = state.nurses.find((n) => n.id === nurseId);
       if (!nurse) return { success: false, error: '护士不存在' };
 
-      const id = genId();
       const bed = state.beds.find((b) => b.id === apt.bedId);
       const patient = state.patients.find((p) => p.id === apt.patientId);
+
+      if (bed && (bed.status === 'occupied' || bed.status === 'isolated')) {
+        const opLogId = helpers.opLog(
+          'admission_confirm',
+          'admission',
+          `床位 ${bed.bedNumber} 当前已被占用，不可重复入床`,
+          {
+            targetId: appointmentId,
+            targetName: bed.bedNumber,
+            isAbnormal: true,
+            abnormalReason: 'time_overlap',
+          },
+        );
+        helpers.abnRec(
+          'time_overlap',
+          opLogId,
+          `床位 ${bed.bedNumber} 已被占用，入床失败`,
+          { bedId: apt.bedId },
+        );
+        return {
+          success: false,
+          error: `该床位当前已被占用（${bed.status === 'isolated' ? '隔离中' : '使用中'}），请先处理现有患者`,
+        };
+      }
+
+      const conflictingAdmission = state.admissions.find(
+        (a) => a.bedId === apt.bedId && a.status === 'in_bed',
+      );
+      if (conflictingAdmission) {
+        const opLogId = helpers.opLog(
+          'admission_confirm',
+          'admission',
+          `该床位存在未完成的在床记录，不可重复入床`,
+          {
+            targetId: appointmentId,
+            targetName: bed?.bedNumber,
+            isAbnormal: true,
+            abnormalReason: 'time_overlap',
+          },
+        );
+        helpers.abnRec(
+          'time_overlap',
+          opLogId,
+          '该床位存在未完成的在床记录',
+          { bedId: apt.bedId },
+        );
+        return {
+          success: false,
+          error: '该床位存在未完成的在床记录，不可重复入床',
+        };
+      }
+
+      const id = genId();
       const admission: Admission = {
         id,
         appointmentId: apt.id,
@@ -733,10 +806,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       }
 
       const dischargedAt = Date.now();
-      if (dischargedAt < admission.admittedAt) {
-        const logType = force ? 'discharge_force' : 'discharge_normal';
+      if (!force && dischargedAt < admission.admittedAt) {
         const opLogId = helpers.opLog(
-          logType,
+          'discharge_normal',
           'admission',
           '出床时间不能早于入床时间',
           {
@@ -882,6 +954,16 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
     },
 
     importSampleData: () => {
+      const importLog: OperationLog = {
+        id: genId(),
+        type: 'data_import',
+        operatorId: 'system',
+        operatorName: '系统',
+        targetType: 'system',
+        detail: '导入样例数据',
+        timestamp: Date.now(),
+        isAbnormal: false,
+      };
       set({
         beds: [...sampleData.beds],
         nurses: [...sampleData.nurses],
@@ -891,18 +973,17 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         appointments: [...sampleData.appointments],
         admissions: [...sampleData.admissions],
         careNotes: [...sampleData.careNotes],
-        operationLogs: [],
-        abnormalRecords: [],
+        operationLogs: [importLog, ...sampleData.operationLogs],
+        abnormalRecords: [...sampleData.abnormalRecords],
         currentUserId: null,
         currentUser: null,
         currentNurse: null,
       });
-      helpers.opLog('data_import', 'system', '导入样例数据');
     },
 
     exportDailyReport: (dateStr) => {
       const state = get();
-      const dayStart = new Date(dateStr + 'T00:00:00').getTime();
+      const dayStart = parseLocalTime(dateStr, '00:00');
       const dayEnd = dayStart + 24 * 60 * 60 * 1000;
 
       const rows: string[][] = [];
@@ -1033,3 +1114,5 @@ export const useAppStore = create<AppState>()(
     },
   }),
 );
+
+export { buildStore, STORE_KEY };

@@ -57,3 +57,32 @@ export function downloadBlob(
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
 }
+
+export function getTodayStr(): string {
+  const d = new Date()
+  return (
+    d.getFullYear() +
+    "-" +
+    pad(d.getMonth() + 1) +
+    "-" +
+    pad(d.getDate())
+  )
+}
+
+export function getTodayStartTs(): number {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+export function parseLocalTime(
+  dateStr: string,
+  hhmm: string,
+): number {
+  const [y, m, d] = dateStr.split("-").map(Number)
+  const [h, min] = hhmm.split(":").map(Number)
+  const dt = new Date(y, m - 1, d, h, min, 0, 0)
+  return dt.getTime()
+}
+
+export const todayStr = getTodayStr()
