@@ -8,6 +8,7 @@ import NewAppointment from "@/pages/NewAppointment"
 import TriageQueue from "@/pages/TriageQueue"
 import Config from "@/pages/Config"
 import History from "@/pages/History"
+import LeaveManagement from "@/pages/LeaveManagement"
 import NotFound from "@/pages/NotFound"
 import { useAppStore } from "@/store"
 import type { ReactNode } from "react"
@@ -64,6 +65,16 @@ export default function App() {
               <RequireAuth>
                 <Layout>
                   <TriageQueue />
+                </Layout>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/leaves"
+            element={
+              <RequireAuth>
+                <Layout>
+                  <LeaveManagement />
                 </Layout>
               </RequireAuth>
             }

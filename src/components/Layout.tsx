@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   CalendarClock,
   ClipboardCheck,
+  CalendarDays,
   History,
   Settings,
   ChevronLeft,
@@ -45,6 +46,7 @@ const routeTitleMap: Record<string, string> = {
   '/dashboard': '看板',
   '/appointments': '预约管理',
   '/triage': '签到与分诊',
+  '/leaves': '请假管理',
   '/history': '历史记录',
   '/config': '系统配置',
 };
@@ -114,6 +116,11 @@ export function Layout({ children }: LayoutProps) {
         label: '分诊',
         path: '/triage',
         icon: <ClipboardCheck className="w-5 h-5" />,
+      },
+      {
+        label: '请假',
+        path: '/leaves',
+        icon: <CalendarDays className="w-5 h-5" />,
       },
       {
         label: '历史',

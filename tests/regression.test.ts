@@ -2372,6 +2372,564 @@ async function runAllTests() {
     }
   }
 
+  // ───────── 住院请假与销假模块专项测试 ─────────
+  section('住院请假与销假模块（核心5类场景）');
+
+  // 辅助函数：找一个 A 区在床患者
+  function pickInBedAdmission(state: any, zone?: string) {
+    const adms = state.admissions.filter((a: any) => a.status === 'in_bed');
+    for (const adm of adms) {
+      const bed = state.beds.find((b: any) => b.id === adm.bedId);
+      if (!zone || bed?.zone === zone) return { admission: adm, bed };
+    }
+    return undefined;
+  }
+
+  // Test 61: 申请成功 → 审批 → 离院 → 返院（全链路）
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const s = store.getState();
+
+    const picked = pickInBedAdmission(s, 'A');
+    if (!picked) throw new Error('找不到A区在床患者');
+    const { admission, bed } = picked;
+
+    // 先清理该患者的未完成医嘱（保证可通过）
+    const noteIds = (s.careNotes || [])
+      .filter((n: any) => n.admissionId === admission.id && (n.type === 'medication' || n.type === 'treatment'))
+      .map((n: any) => n.id);
+    if (noteIds.length > 0) {
+      store.setState({ careNotes: s.careNotes.filter((n: any) => !noteIds.includes(n.id)) });
+    }
+
+    const before = snapshotState(store);
+    const now = Date.now();
+    const createResult = store.getState().createLeaveRequest({
+      admissionId: admission.id,
+      departTime: now + 30 * 60 * 1000,
+      expectedReturnTime: now + 3 * 60 * 60 * 1000,
+      companionName: '家属甲',
+      companionPhone: '13800138000',
+      reason: '回家取换洗衣物',
+      submittedBy: 'nurse-002',
+    });
+    assertEqual(createResult.success, true, '请假申请提交成功');
+    const leaveId = createResult.data!.id;
+
+    const s2 = store.getState();
+    const leave = s2.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leave?.status, 'pending', '状态为待审批');
+    assertEqual(leave?.zone, 'A', '病区号正确');
+    assertEqual(leave?.patientId, admission.patientId, '患者关联正确');
+    assertEqual(leave?.bedId, bed.id, '床位关联正确');
+    assertEqual(leave?.companionName, '家属甲', '陪同人姓名正确');
+    assertEqual(leave?.companionPhone, '13800138000', '联系电话正确');
+    assertEqual(leave?.reason, '回家取换洗衣物', '请假原因正确');
+    assertEqual(leave?.submittedBy, 'nurse-002', '提交人正确');
+
+    const auditLogs = s2.getLeaveAuditLogs(leaveId);
+    assertEqual(auditLogs.length, 1, '有1条审计轨迹');
+    assertEqual(auditLogs[0].action, 'submit', '审计轨迹: submit');
+    assertEqual(auditLogs[0].newStatus, 'pending', '审计轨迹状态正确');
+
+    const opLogSubmit = s2.operationLogs.find((l: any) => l.type === 'leave_request_create');
+    assert(opLogSubmit, 'leave_request_create 操作日志存在');
+    assertEqual(opLogSubmit.operatorId, 'nurse-002', '提交操作人正确');
+
+    // 审批通过（使用 senior nurse-002）
+    const approveResult = store.getState().approveLeaveRequest(leaveId, 'nurse-002');
+    assertEqual(approveResult.success, true, '审批通过成功');
+    const s3 = store.getState();
+    const leave3 = s3.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leave3?.status, 'approved', '状态已批准');
+    assertEqual(leave3?.approvedBy, 'nurse-002', '批准人正确');
+    const auditLogs3 = s3.getLeaveAuditLogs(leaveId);
+    assertEqual(auditLogs3.length, 2, '审计轨迹2条');
+    const auditApprove = auditLogs3.find((a: any) => a.action === 'approve');
+    assert(auditApprove, '审计轨迹: approve');
+    assertEqual(auditApprove.previousStatus, 'pending', '轨迹转移前状态');
+    assertEqual(auditApprove.newStatus, 'approved', '轨迹转移后状态');
+
+    // 确认离院（使用 normal nurse-004）
+    const departResult = store.getState().confirmLeaveDepart(leaveId, 'nurse-004');
+    assertEqual(departResult.success, true, '普通护士确认离院成功');
+    const s4 = store.getState();
+    const leave4 = s4.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leave4?.status, 'departed', '状态已离院');
+    assert(leave4?.actualDepartTime !== undefined, '实际离院时间已记录');
+    assertEqual(leave4?.departedBy, 'nurse-004', '离院确认人正确');
+    const auditLogs4 = s4.getLeaveAuditLogs(leaveId);
+    assertEqual(auditLogs4.length, 3, '审计轨迹3条');
+    const auditDepart = auditLogs4.find((a: any) => a.action === 'confirm_depart');
+    assert(auditDepart, '审计轨迹: confirm_depart');
+
+    // 确认返院（再使用 normal nurse）
+    const returnResult = store.getState().confirmLeaveReturn(leaveId, 'nurse-004');
+    assertEqual(returnResult.success, true, '普通护士确认返院成功');
+    const s5 = store.getState();
+    const leave5 = s5.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leave5?.status, 'returned', '状态已返院');
+    assert(leave5?.actualReturnTime !== undefined, '实际返院时间已记录');
+    assertEqual(leave5?.returnedBy, 'nurse-004', '返院确认人正确');
+    const auditLogs5 = s5.getLeaveAuditLogs(leaveId);
+    assertEqual(auditLogs5.length, 4, '审计轨迹4条');
+    const auditReturn = auditLogs5.find((a: any) => a.action === 'confirm_return');
+    assert(auditReturn, '审计轨迹: confirm_return');
+
+    const opLogTypes = s5.operationLogs.filter((l: any) => l.targetType === 'leave_request').map((l: any) => l.type);
+    assert(opLogTypes.includes('leave_request_create'), '操作日志包含 create');
+    assert(opLogTypes.includes('leave_request_approve'), '操作日志包含 approve');
+    assert(opLogTypes.includes('leave_depart_confirm'), '操作日志包含 depart');
+    assert(opLogTypes.includes('leave_return_confirm'), '操作日志包含 return');
+
+    pass('Test 61: 全链路成功 - 申请→审批→离院→返院，状态与审计轨迹完整，操作双写');
+  }
+
+  // Test 62: 规则拦截 - 超时长、夜间禁出、未完成医嘱、时段重叠、已出院
+  {
+    // 62a: 超时长 - A 区最大 6 小时
+    {
+      const store = createCleanStore();
+      store.getState().importSampleData();
+      const s = store.getState();
+      const picked = pickInBedAdmission(s, 'A');
+      if (!picked) throw new Error('找不到A区在床患者');
+
+      const noteIds = (s.careNotes || [])
+        .filter((n: any) => n.admissionId === picked.admission.id && (n.type === 'medication' || n.type === 'treatment'))
+        .map((n: any) => n.id);
+      if (noteIds.length > 0) {
+        store.setState({ careNotes: s.careNotes.filter((n: any) => !noteIds.includes(n.id)) });
+      }
+
+      const before = snapshotState(store);
+      const now = Date.now();
+      const r = store.getState().createLeaveRequest({
+        admissionId: picked.admission.id,
+        departTime: now + 30 * 60 * 1000,
+        expectedReturnTime: now + 10 * 60 * 60 * 1000,
+        companionName: '家属',
+        companionPhone: '13800138000',
+        reason: '超时长测试',
+        submittedBy: 'nurse-002',
+      });
+      assertEqual(r.success, false, '超时长应失败');
+      assert(r.error?.includes('时长') || r.error?.includes('小时'), '错误信息含时长提示');
+
+      const sAfter = store.getState();
+      assertEqual(sAfter.leaveRequests.length, 0, '未创建任何请假记录');
+      const abn = sAfter.abnormalRecords.find((a: any) => a.type === 'leave_duration_exceeded');
+      assert(abn, '异常记录: leave_duration_exceeded');
+      pass('Test 62a: 规则拦截 - 超出病区最长期限（A区6小时，申请10小时）→ 拦截成功，异常留痕');
+    }
+
+    // 62b: 夜间禁出（A区 22:00-06:00）
+    {
+      const store = createCleanStore();
+      store.getState().importSampleData();
+      const s = store.getState();
+      const picked = pickInBedAdmission(s, 'A');
+      if (!picked) throw new Error('找不到A区在床患者');
+
+      const noteIds = (s.careNotes || [])
+        .filter((n: any) => n.admissionId === picked.admission.id && (n.type === 'medication' || n.type === 'treatment'))
+        .map((n: any) => n.id);
+      if (noteIds.length > 0) {
+        store.setState({ careNotes: s.careNotes.filter((n: any) => !noteIds.includes(n.id)) });
+      }
+
+      const todayStr = getTodayStr();
+      const nightDepart = parseLocalTime(todayStr, '23:00');
+      const r = store.getState().createLeaveRequest({
+        admissionId: picked.admission.id,
+        departTime: nightDepart,
+        expectedReturnTime: nightDepart + 2 * 60 * 60 * 1000,
+        companionName: '家属',
+        companionPhone: '13800138000',
+        reason: '夜间测试',
+        submittedBy: 'nurse-002',
+      });
+      assertEqual(r.success, false, '夜间禁出应失败');
+      const sAfter = store.getState();
+      const abn = sAfter.abnormalRecords.find((a: any) => a.type === 'leave_night_forbidden');
+      assert(abn, '异常记录: leave_night_forbidden');
+      pass('Test 62b: 规则拦截 - 离院时间落入夜间禁出时段（22-06禁出，23:00离院）→ 拦截成功');
+    }
+
+    // 62c: 未完成医嘱拦截（A区 requireCompletedOrders=true）
+    {
+      const store = createCleanStore();
+      store.getState().importSampleData();
+      const s = store.getState();
+      const picked = pickInBedAdmission(s, 'A');
+      if (!picked) throw new Error('找不到A区在床患者');
+
+      store.getState().addCareNote({
+        admissionId: picked.admission.id,
+        nurseId: 'nurse-002',
+        content: '待执行的口服药',
+        timestamp: Date.now(),
+        type: 'medication',
+      });
+
+      const now = Date.now();
+      const r = store.getState().createLeaveRequest({
+        admissionId: picked.admission.id,
+        departTime: now + 30 * 60 * 1000,
+        expectedReturnTime: now + 2 * 60 * 60 * 1000,
+        companionName: '家属',
+        companionPhone: '13800138000',
+        reason: '医嘱测试',
+        submittedBy: 'nurse-002',
+      });
+      assertEqual(r.success, false, '未完成医嘱应失败');
+      const sAfter = store.getState();
+      const abn = sAfter.abnormalRecords.find((a: any) => a.type === 'leave_pending_orders');
+      assert(abn, '异常记录: leave_pending_orders');
+      pass('Test 62c: 规则拦截 - 存在未完成医嘱（medication类护理记录）→ 拦截成功');
+    }
+
+    // 62d: 时段重叠（同一患者2条请假重叠）
+    {
+      const store = createCleanStore();
+      store.getState().importSampleData();
+      const s = store.getState();
+      const picked = pickInBedAdmission(s, 'A');
+      if (!picked) throw new Error('找不到A区在床患者');
+
+      const noteIds = (s.careNotes || [])
+        .filter((n: any) => n.admissionId === picked.admission.id && (n.type === 'medication' || n.type === 'treatment'))
+        .map((n: any) => n.id);
+      if (noteIds.length > 0) {
+        store.setState({ careNotes: s.careNotes.filter((n: any) => !noteIds.includes(n.id)) });
+      }
+
+      const now = Date.now();
+      const r1 = store.getState().createLeaveRequest({
+        admissionId: picked.admission.id,
+        departTime: now + 30 * 60 * 1000,
+        expectedReturnTime: now + 90 * 60 * 1000,
+        companionName: '家属',
+        companionPhone: '13800138000',
+        reason: '重叠测试第一条',
+        submittedBy: 'nurse-002',
+      });
+      assertEqual(r1.success, true, '第一条请假成功');
+      const apprR = store.getState().approveLeaveRequest(r1.data!.id, 'nurse-002');
+      assertEqual(apprR.success, true, '第一条批准成功');
+
+      const r2 = store.getState().createLeaveRequest({
+        admissionId: picked.admission.id,
+        departTime: now + 60 * 60 * 1000,
+        expectedReturnTime: now + 2 * 60 * 60 * 1000,
+        companionName: '家属',
+        companionPhone: '13800138000',
+        reason: '重叠测试第二条',
+        submittedBy: 'nurse-002',
+      });
+      assertEqual(r2.success, false, '第二条重叠请假应失败');
+      const sAfter = store.getState();
+      assertEqual(sAfter.leaveRequests.length, 1, '仍只有第一条请假记录');
+      const abn = sAfter.abnormalRecords.find((a: any) => a.type === 'leave_time_overlap');
+      assert(abn, '异常记录: leave_time_overlap');
+      pass('Test 62d: 规则拦截 - 同一患者两条请假时段重叠 → 第二条被拦截');
+    }
+
+    // 62e: 已出院患者不能请假
+    {
+      const store = createCleanStore();
+      store.getState().importSampleData();
+      const s = store.getState();
+      const discharged = s.admissions.find((a: any) => a.status === 'discharged' || a.status === 'force_released');
+      if (discharged) {
+        const now = Date.now();
+        const r = store.getState().createLeaveRequest({
+          admissionId: discharged.id,
+          departTime: now + 30 * 60 * 1000,
+          expectedReturnTime: now + 2 * 60 * 60 * 1000,
+          companionName: '家属',
+          companionPhone: '13800138000',
+          reason: '已出院测试',
+          submittedBy: 'nurse-002',
+        });
+        assertEqual(r.success, false, '已出院患者申请失败');
+        const sAfter = store.getState();
+        const abn = sAfter.abnormalRecords.find((a: any) => a.type === 'leave_patient_discharged');
+        assert(abn, '异常记录: leave_patient_discharged');
+        pass('Test 62e: 规则拦截 - 已出院患者提交申请 → 被拦截');
+      } else {
+        pass('Test 62e: 规则拦截 - 样例无出院患者记录，跳过');
+      }
+    }
+  }
+
+  // Test 63: 越权限制 - 普通护士不能审批
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const s = store.getState();
+    const picked = pickInBedAdmission(s, 'A');
+    if (!picked) throw new Error('找不到A区在床患者');
+
+    const noteIds = (s.careNotes || [])
+      .filter((n: any) => n.admissionId === picked.admission.id && (n.type === 'medication' || n.type === 'treatment'))
+      .map((n: any) => n.id);
+    if (noteIds.length > 0) {
+      store.setState({ careNotes: s.careNotes.filter((n: any) => !noteIds.includes(n.id)) });
+    }
+
+    const now = Date.now();
+    const r = store.getState().createLeaveRequest({
+      admissionId: picked.admission.id,
+      departTime: now + 30 * 60 * 1000,
+      expectedReturnTime: now + 2 * 60 * 60 * 1000,
+      companionName: '家属',
+      companionPhone: '13800138000',
+      reason: '越权测试',
+      submittedBy: 'nurse-002',
+    });
+    assertEqual(r.success, true, '请假申请创建成功');
+    const leaveId = r.data!.id;
+
+    // 普通护士审批 → 失败
+    const apprByNormal = store.getState().approveLeaveRequest(leaveId, 'nurse-004');
+    assertEqual(apprByNormal.success, false, '普通护士批准失败');
+    assert(apprByNormal.error?.includes('无权') || apprByNormal.error?.includes('权限'), '错误含权限提示');
+    const sAfter1 = store.getState();
+    const abn1 = sAfter1.abnormalRecords.find((a: any) => a.type === 'leave_permission_denied');
+    assert(abn1, '异常记录: leave_permission_denied (approve)');
+    const leaveAfter1 = sAfter1.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leaveAfter1?.status, 'pending', '状态仍为 pending');
+
+    // 普通护士驳回 → 失败
+    const rejectByNormal = store.getState().rejectLeaveRequest(leaveId, 'nurse-004', '普通护士驳回');
+    assertEqual(rejectByNormal.success, false, '普通护士驳回失败');
+    const sAfter2 = store.getState();
+    const leaveAfter2 = sAfter2.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leaveAfter2?.status, 'pending', '驳回也被拦截，状态仍为 pending');
+
+    // 高级护士先批准
+    const apprBySenior = store.getState().approveLeaveRequest(leaveId, 'nurse-002');
+    assertEqual(apprBySenior.success, true, '高级护士批准成功');
+
+    // 普通护士撤回 → 失败（既不是原批准人也不是admin）
+    const withdrawByNormal = store.getState().withdrawLeaveRequest(leaveId, 'nurse-004', '普通护士撤回');
+    assertEqual(withdrawByNormal.success, false, '普通护士撤回失败');
+    const sAfter3 = store.getState();
+    const leaveAfter3 = sAfter3.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leaveAfter3?.status, 'approved', '状态保持 approved');
+
+    // 高级护士（原批准人）撤回 → 成功
+    const withdrawBySenior = store.getState().withdrawLeaveRequest(leaveId, 'nurse-002', '原批准人撤回');
+    assertEqual(withdrawBySenior.success, true, '原批准人撤回成功');
+    const sAfter4 = store.getState();
+    const leaveAfter4 = sAfter4.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leaveAfter4?.status, 'withdrawn', '状态已撤回');
+    assertEqual(leaveAfter4?.withdrawnBy, 'nurse-002', '撤回人正确');
+    assertEqual(leaveAfter4?.withdrawReason, '原批准人撤回', '撤回原因正确');
+
+    pass('Test 63: 越权限制 - 普通护士不能批准/驳回/撤回他人批准，仅护士确认离院返院可操作');
+  }
+
+  // Test 64: 撤回恢复（批准→撤回→再批准→正常走流程）
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const s = store.getState();
+    const picked = pickInBedAdmission(s, 'B');
+    if (!picked) throw new Error('找不到B区在床患者');
+
+    const noteIds = (s.careNotes || [])
+      .filter((n: any) => n.admissionId === picked.admission.id && (n.type === 'medication' || n.type === 'treatment'))
+      .map((n: any) => n.id);
+    if (noteIds.length > 0) {
+      store.setState({ careNotes: s.careNotes.filter((n: any) => !noteIds.includes(n.id)) });
+    }
+
+    const now = Date.now();
+    const createR = store.getState().createLeaveRequest({
+      admissionId: picked.admission.id,
+      departTime: now + 30 * 60 * 1000,
+      expectedReturnTime: now + 2 * 60 * 60 * 1000,
+      companionName: '家属',
+      companionPhone: '13800138000',
+      reason: '撤回恢复测试',
+      submittedBy: 'nurse-001',
+    });
+    assertEqual(createR.success, true, '申请创建成功');
+    const leaveId = createR.data!.id;
+
+    const apprR = store.getState().approveLeaveRequest(leaveId, 'nurse-001');
+    assertEqual(apprR.success, true, 'admin 批准成功');
+
+    // 另一位高级护士（非原批准人）尝试撤回 → 失败（非admin撤回他人批准）
+    const wrongWithdraw = store.getState().withdrawLeaveRequest(leaveId, 'nurse-002', '他人批准的撤回尝试');
+    assertEqual(wrongWithdraw.success, false, '非原批准人撤回他人批准被拒（非admin）');
+
+    // admin 撤回 → 成功（admin可撤回任何批准）
+    const withdrawR = store.getState().withdrawLeaveRequest(leaveId, 'nurse-001', 'admin 撤回自己的批准');
+    assertEqual(withdrawR.success, true, 'admin 撤回成功');
+    const sAfter = store.getState();
+    const leaveW = sAfter.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leaveW?.status, 'withdrawn', '状态为已撤回');
+    const auditAfterW = sAfter.getLeaveAuditLogs(leaveId);
+    const wLog = auditAfterW.find((a: any) => a.action === 'withdraw');
+    assert(wLog, '审计轨迹包含 withdraw');
+    assertEqual(wLog.reason, 'admin 撤回自己的批准', '撤回原因记入审计');
+
+    // 再批准：已撤回状态不能再直接approve（需新建）
+    const reApproveR = store.getState().approveLeaveRequest(leaveId, 'nurse-001');
+    assertEqual(reApproveR.success, false, '已撤回的请假不能再批准，状态转移非法');
+    const sAfter2 = store.getState();
+    const abnInvalid = sAfter2.abnormalRecords.find((a: any) => a.type === 'leave_status_invalid');
+    assert(abnInvalid, '异常记录: leave_status_invalid（非法状态转移）');
+
+    // 重新提交一条新的（离院/返院都在白天，避开B区21:00-06:30夜间禁出）
+    const createR2 = store.getState().createLeaveRequest({
+      admissionId: picked.admission.id,
+      departTime: now + 60 * 60 * 1000,
+      expectedReturnTime: now + 2 * 60 * 60 * 1000,
+      companionName: '家属',
+      companionPhone: '13800138000',
+      reason: '撤回后重新申请',
+      submittedBy: 'nurse-001',
+    });
+    assertEqual(createR2.success, true, '撤回后可以重新提交新的请假申请（成功）');
+    const leaveId2 = createR2.data!.id;
+    const apprR2 = store.getState().approveLeaveRequest(leaveId2, 'nurse-001');
+    assertEqual(apprR2.success, true, '新申请批准成功');
+    const depR2 = store.getState().confirmLeaveDepart(leaveId2, 'nurse-004');
+    assertEqual(depR2.success, true, '新申请确认离院成功');
+    const retR2 = store.getState().confirmLeaveReturn(leaveId2, 'nurse-004');
+    assertEqual(retR2.success, true, '新申请确认返院成功');
+
+    // 重复销假 → 拦截
+    const dupReturn = store.getState().confirmLeaveReturn(leaveId2, 'nurse-004');
+    assertEqual(dupReturn.success, false, '重复销假被拦截');
+    const sAfter3 = store.getState();
+    const abnDup = sAfter3.abnormalRecords.find((a: any) => a.type === 'leave_duplicate_return');
+    assert(abnDup, '异常记录: leave_duplicate_return');
+
+    pass('Test 64: 撤回恢复 - 撤回后新建申请可通过，重复销假被拦截，非法状态转移拦截');
+  }
+
+  // Test 65: 重启后一致性（序列化导出→反序列化导入，请假数据与状态全部恢复）
+  {
+    const store1 = createCleanStore();
+    store1.getState().importSampleData();
+    store1.getState().login('nurse-001', '123456');
+    const s1 = store1.getState();
+    const picked = pickInBedAdmission(s1, 'A');
+    if (!picked) throw new Error('找不到A区在床患者');
+
+    const noteIds = (s1.careNotes || [])
+      .filter((n: any) => n.admissionId === picked.admission.id && (n.type === 'medication' || n.type === 'treatment'))
+      .map((n: any) => n.id);
+    if (noteIds.length > 0) {
+      store1.setState({ careNotes: s1.careNotes.filter((n: any) => !noteIds.includes(n.id)) });
+    }
+
+    const now = Date.now();
+    const createR = s1.createLeaveRequest({
+      admissionId: picked.admission.id,
+      departTime: now + 30 * 60 * 1000,
+      expectedReturnTime: now + 2 * 60 * 60 * 1000,
+      companionName: '家属持久化',
+      companionPhone: '13900139000',
+      reason: '持久化测试请假',
+      submittedBy: 'nurse-001',
+    });
+    assertEqual(createR.success, true, '申请创建成功');
+    const leaveId = createR.data!.id;
+    s1.approveLeaveRequest(leaveId, 'nurse-001');
+    s1.confirmLeaveDepart(leaveId, 'nurse-004');
+
+    const s1After = store1.getState();
+    const leavesBefore = s1After.leaveRequests.length;
+    const logsBefore = s1After.leaveAuditLogs.length;
+    const configsBefore = s1After.wardLeaveConfigs.length;
+    assert(leavesBefore >= 1, 'store1至少有1条请假');
+    assert(logsBefore >= 3, 'store1至少有3条请假审计');
+    assert(configsBefore >= 2, 'store1至少有2条病区规则');
+
+    const leaveSnapshot = s1After.leaveRequests.find((l: any) => l.id === leaveId);
+    const auditSnapshot = s1After.getLeaveAuditLogs(leaveId);
+
+    const serializableKeys = [
+      'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
+      'appointments', 'admissions', 'careNotes', 'operationLogs',
+      'abnormalRecords', 'currentUserId', 'checkIns',
+      'campuses', 'triageUndoRecords',
+      'leaveRequests', 'leaveAuditLogs', 'wardLeaveConfigs',
+    ] as const;
+
+    const snapshot = JSON.stringify(
+      Object.fromEntries(serializableKeys.map((k) => [k, (s1After as any)[k]])),
+    );
+
+    // 模拟重启
+    const store2 = createCleanStore();
+    const restored = JSON.parse(snapshot);
+    store2.setState(restored);
+    const user = (restored.nurses ?? []).find((n: any) => n.id === restored.currentUserId) || null;
+    store2.setState({ currentUser: user, currentNurse: user });
+
+    const s2 = store2.getState();
+
+    // 集合数量一致性
+    assertEqual(s2.leaveRequests.length, leavesBefore, 'leaveRequests 数量一致');
+    assertEqual(s2.leaveAuditLogs.length, logsBefore, 'leaveAuditLogs 数量一致');
+    assertEqual(s2.wardLeaveConfigs.length, configsBefore, 'wardLeaveConfigs 数量一致');
+
+    // 每条记录字段一致性
+    const restoredLeave = s2.leaveRequests.find((l: any) => l.id === leaveId);
+    assert(restoredLeave, '目标请假记录存在');
+    assertEqual(restoredLeave.patientId, leaveSnapshot.patientId, 'patientId 还原一致');
+    assertEqual(restoredLeave.bedId, leaveSnapshot.bedId, 'bedId 还原一致');
+    assertEqual(restoredLeave.zone, leaveSnapshot.zone, 'zone 还原一致');
+    assertEqual(restoredLeave.status, leaveSnapshot.status, 'status 还原一致（departed）');
+    assertEqual(restoredLeave.departTime, leaveSnapshot.departTime, 'departTime 还原一致');
+    assertEqual(restoredLeave.expectedReturnTime, leaveSnapshot.expectedReturnTime, 'expectedReturnTime 还原一致');
+    assertEqual(restoredLeave.actualDepartTime, leaveSnapshot.actualDepartTime, 'actualDepartTime 还原一致');
+    assertEqual(restoredLeave.companionName, leaveSnapshot.companionName, 'companionName 还原一致');
+    assertEqual(restoredLeave.companionPhone, leaveSnapshot.companionPhone, 'companionPhone 还原一致');
+    assertEqual(restoredLeave.reason, leaveSnapshot.reason, 'reason 还原一致');
+    assertEqual(restoredLeave.submittedBy, leaveSnapshot.submittedBy, 'submittedBy 还原一致');
+    assertEqual(restoredLeave.approvedBy, leaveSnapshot.approvedBy, 'approvedBy 还原一致');
+    assertEqual(restoredLeave.departedBy, leaveSnapshot.departedBy, 'departedBy 还原一致');
+
+    // 审计轨迹还原
+    const restoredAudit = s2.getLeaveAuditLogs(leaveId);
+    assertEqual(restoredAudit.length, auditSnapshot.length, '审计轨迹条数一致');
+    for (let i = 0; i < restoredAudit.length; i++) {
+      assertEqual(restoredAudit[i].action, auditSnapshot[i].action, `审计${i} action一致`);
+      assertEqual(restoredAudit[i].newStatus, auditSnapshot[i].newStatus, `审计${i} newStatus一致`);
+    }
+
+    // 病区规则还原
+    const configA = s2.wardLeaveConfigs.find((c: any) => c.zone === 'A');
+    assert(configA, 'A区规则存在');
+    assertEqual(configA.maxLeaveHours, 6, 'A区最大6小时还原一致');
+    assertEqual(configA.nightExitStartTime, '22:00', 'A区夜间开始时间还原一致');
+    assertEqual(configA.nightExitEndTime, '06:00', 'A区夜间结束时间还原一致');
+    assertEqual(configA.requireCompletedOrders, true, 'A区医嘱要求还原一致');
+
+    // 重启后依然可以继续操作（返院确认）
+    const returnR = store2.getState().confirmLeaveReturn(leaveId, 'nurse-004');
+    assertEqual(returnR.success, true, '重启后仍可正常确认返院');
+    const leaveFinal = store2.getState().leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leaveFinal?.status, 'returned', '重启后确认返院 → 状态变为 returned');
+
+    // 导出备份接口也包含三项新集合
+    const backup = s2.exportBackup();
+    assert(backup.data.leaveRequests && backup.data.leaveRequests.length > 0, '备份包含 leaveRequests');
+    assert(backup.data.leaveAuditLogs && backup.data.leaveAuditLogs.length > 0, '备份包含 leaveAuditLogs');
+    assert(backup.data.wardLeaveConfigs && backup.data.wardLeaveConfigs.length > 0, '备份包含 wardLeaveConfigs');
+
+    pass('Test 65: 重启一致性 - 请假记录、审计轨迹、病区规则全部持久化还原，重启后可继续操作，备份导出也闭环');
+  }
+
   // ───────── 测试汇总 ─────────
   section('测试汇总');
 

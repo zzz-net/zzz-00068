@@ -192,7 +192,14 @@ export type OperationType =
   | 'backup_restore'
   | 'backup_restore_rollback'
   | 'backup_auto_snapshot'
-  | 'campus_config_change';
+  | 'campus_config_change'
+  | 'leave_request_create'
+  | 'leave_request_approve'
+  | 'leave_request_reject'
+  | 'leave_request_withdraw'
+  | 'leave_depart_confirm'
+  | 'leave_return_confirm'
+  | 'leave_config_change';
 
 export type OperationTargetType =
   | 'appointment'
@@ -206,7 +213,10 @@ export type OperationTargetType =
   | 'care_note'
   | 'checkin'
   | 'campus'
-  | 'triage_undo';
+  | 'triage_undo'
+  | 'leave_request'
+  | 'leave_config'
+  | 'leave_audit';
 
 export interface OperationLog {
   id: string;
@@ -245,7 +255,16 @@ export type AbnormalType =
   | 'backup_patient_duplicate_admission'
   | 'backup_missing_required_field'
   | 'backup_permission_denied'
-  | 'department_conflict';
+  | 'department_conflict'
+  | 'leave_duration_exceeded'
+  | 'leave_night_forbidden'
+  | 'leave_pending_orders'
+  | 'leave_time_overlap'
+  | 'leave_patient_discharged'
+  | 'leave_duplicate_return'
+  | 'leave_return_overdue'
+  | 'leave_permission_denied'
+  | 'leave_status_invalid';
 
 export interface AbnormalRecord {
   id: string;
@@ -265,6 +284,87 @@ export interface ValidationResult {
   error?: string;
 }
 
+export type LeaveStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'departed'
+  | 'returned'
+  | 'withdrawn'
+  | 'overdue_return';
+
+export type LeaveActionType =
+  | 'submit'
+  | 'approve'
+  | 'reject'
+  | 'withdraw'
+  | 'confirm_depart'
+  | 'confirm_return';
+
+export interface WardLeaveConfig {
+  id: string;
+  zone: string;
+  maxLeaveHours: number;
+  nightExitStartTime: string;
+  nightExitEndTime: string;
+  requireCompletedOrders: boolean;
+  active: boolean;
+  createdAt: number;
+}
+
+export interface LeaveRequest {
+  id: string;
+  admissionId: string;
+  patientId: string;
+  bedId: string;
+  zone: string;
+  departTime: number;
+  expectedReturnTime: number;
+  actualDepartTime?: number;
+  actualReturnTime?: number;
+  companionName: string;
+  companionPhone: string;
+  reason: string;
+  status: LeaveStatus;
+  submittedBy: string;
+  submittedAt: number;
+  approvedBy?: string;
+  approvedAt?: number;
+  rejectedBy?: string;
+  rejectedAt?: number;
+  rejectReason?: string;
+  withdrawnBy?: string;
+  withdrawnAt?: number;
+  withdrawReason?: string;
+  departedBy?: string;
+  returnedBy?: string;
+  overdue?: boolean;
+  notes?: string;
+  createdAt: number;
+}
+
+export interface LeaveAuditLog {
+  id: string;
+  leaveRequestId: string;
+  action: LeaveActionType;
+  operatorId: string;
+  operatorName: string;
+  previousStatus?: LeaveStatus;
+  newStatus: LeaveStatus;
+  reason?: string;
+  timestamp: number;
+}
+
+export interface CreateLeaveRequestPayload {
+  admissionId: string;
+  departTime: number;
+  expectedReturnTime: number;
+  companionName: string;
+  companionPhone: string;
+  reason: string;
+  submittedBy: string;
+}
+
 export type BackupRestoreEntity =
   | 'beds'
   | 'nurses'
@@ -278,7 +378,10 @@ export type BackupRestoreEntity =
   | 'abnormalRecords'
   | 'checkIns'
   | 'campuses'
-  | 'triageUndoRecords';
+  | 'triageUndoRecords'
+  | 'leaveRequests'
+  | 'leaveAuditLogs'
+  | 'wardLeaveConfigs';
 
 export interface BackupData {
   beds: Bed[];
@@ -294,6 +397,9 @@ export interface BackupData {
   checkIns: CheckIn[];
   campuses: Campus[];
   triageUndoRecords: TriageUndoRecord[];
+  leaveRequests: LeaveRequest[];
+  leaveAuditLogs: LeaveAuditLog[];
+  wardLeaveConfigs: WardLeaveConfig[];
 }
 
 export interface BackupFile {
@@ -322,6 +428,9 @@ export interface RestoreDiff {
   checkIns: EntityDiff;
   campuses: EntityDiff;
   triageUndoRecords: EntityDiff;
+  leaveRequests: EntityDiff;
+  leaveAuditLogs: EntityDiff;
+  wardLeaveConfigs: EntityDiff;
 }
 
 export interface ValidationIssue {
@@ -395,6 +504,9 @@ export interface RestoreDetailedDiff {
   checkIns: EntityChanges;
   campuses: EntityChanges;
   triageUndoRecords: EntityChanges;
+  leaveRequests: EntityChanges;
+  leaveAuditLogs: EntityChanges;
+  wardLeaveConfigs: EntityChanges;
 }
 
 export interface RestoreHistoryRecord {

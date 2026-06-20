@@ -12,6 +12,9 @@ import type {
   AbnormalRecord,
   CheckIn,
   TriageUndoRecord,
+  WardLeaveConfig,
+  LeaveRequest,
+  LeaveAuditLog,
 } from '../types';
 import { getTodayStr, parseLocalTime } from '../lib/utils';
 
@@ -45,7 +48,7 @@ const beds: Bed[] = [
   { id: 'bed-004', bedNumber: 'A-4', zone: 'A', type: 'normal', department: '内分泌科', status: 'cleaning', notes: '终末消毒中', campusId: MAIN_CAMPUS, createdAt: now - 50 * dayMs },
   { id: 'bed-005', bedNumber: 'A-5', zone: 'A', type: 'negative', department: '感染科', status: 'isolated', currentPatientId: 'patient-003', currentAdmissionId: 'admission-003', notes: '新冠隔离中', campusId: MAIN_CAMPUS, createdAt: now - 45 * dayMs },
   { id: 'bed-006', bedNumber: 'A-6', zone: 'A', type: 'wheelchair', department: '神经内科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 40 * dayMs },
-  { id: 'bed-007', bedNumber: 'B-7', zone: 'B', type: 'normal', department: '骨科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 35 * dayMs },
+  { id: 'bed-007', bedNumber: 'B-7', zone: 'B', type: 'normal', department: '骨科', status: 'occupied', currentPatientId: 'patient-008', currentAdmissionId: 'admission-004', campusId: MAIN_CAMPUS, createdAt: now - 35 * dayMs },
   { id: 'bed-008', bedNumber: 'B-8', zone: 'B', type: 'normal', department: '神经内科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 30 * dayMs },
   { id: 'bed-009', bedNumber: 'B-9', zone: 'B', type: 'normal', department: '内分泌科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 25 * dayMs },
   { id: 'bed-010', bedNumber: 'B-10', zone: 'B', type: 'normal', department: '消化内科', status: 'idle', campusId: MAIN_CAMPUS, createdAt: now - 20 * dayMs },
@@ -83,12 +86,14 @@ const appointments: Appointment[] = [
   { id: 'appointment-004', patientId: 'patient-005', bedId: 'bed-003', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('09:00'), endTime: parseTodayTime('11:00'), isolationRuleId: 'rule-002', status: 'checked_in', createdBy: 'nurse-004', createdAt: now - 2 * 60 * 60 * 1000 },
   { id: 'appointment-005', patientId: 'patient-007', bedId: 'bed-008', slotId: 'slot-003', appointmentDate: todayStr, startTime: parseTodayTime('17:30'), endTime: parseTodayTime('20:30'), status: 'pending', createdBy: 'nurse-003', createdAt: now - 1 * 60 * 60 * 1000 },
   { id: 'appointment-006', patientId: 'patient-004', bedId: 'bed-009', slotId: 'slot-002', appointmentDate: todayStr, startTime: parseTodayTime('14:00'), endTime: parseTodayTime('17:00'), status: 'cancelled', createdBy: 'nurse-004', createdAt: now - 12 * 60 * 60 * 1000 },
+  { id: 'appointment-007', patientId: 'patient-008', bedId: 'bed-007', slotId: 'slot-001', appointmentDate: todayStr, startTime: parseTodayTime('08:30'), endTime: parseTodayTime('12:00'), status: 'admitted', createdBy: 'nurse-003', createdAt: now - 5 * 60 * 60 * 1000 },
 ];
 
 const admissions: Admission[] = [
   { id: 'admission-001', appointmentId: 'appointment-001', patientId: 'patient-001', bedId: 'bed-001', admittedAt: parseTodayTime('08:15'), status: 'in_bed', admittedBy: 'nurse-002', createdAt: parseTodayTime('08:15') },
   { id: 'admission-002', appointmentId: 'appointment-002', patientId: 'patient-002', bedId: 'bed-002', admittedAt: parseTodayTime('13:10'), status: 'in_bed', admittedBy: 'nurse-003', createdAt: parseTodayTime('13:10') },
   { id: 'admission-003', appointmentId: 'appointment-003', patientId: 'patient-003', bedId: 'bed-005', admittedAt: parseTodayTime('08:45'), status: 'in_bed', admittedBy: 'nurse-002', createdAt: parseTodayTime('08:45') },
+  { id: 'admission-004', appointmentId: 'appointment-007', patientId: 'patient-008', bedId: 'bed-007', admittedAt: parseTodayTime('08:50'), status: 'in_bed', admittedBy: 'nurse-003', createdAt: parseTodayTime('08:50') },
 ];
 
 const careNotes: CareNote[] = [
@@ -98,6 +103,8 @@ const careNotes: CareNote[] = [
   { id: 'care-note-004', admissionId: 'admission-002', nurseId: 'nurse-002', content: '患者诉头晕，测血压158/95mmHg，报告值班医师，遵医嘱加服降压药，30分钟后复测142/88mmHg。', timestamp: parseTodayTime('14:30'), type: 'abnormal', createdAt: parseTodayTime('14:30') },
   { id: 'care-note-005', admissionId: 'admission-003', nurseId: 'nurse-003', content: '患者入院时体温38.5℃，伴干咳，予抗病毒治疗及对症处理。', timestamp: parseTodayTime('09:00'), type: 'treatment', createdAt: parseTodayTime('09:00') },
   { id: 'care-note-006', admissionId: 'admission-003', nurseId: 'nurse-005', content: '隔离护理措施落实，手卫生宣教到位，嘱患者多饮水、卧床休息。', timestamp: parseTodayTime('10:00'), type: 'observation', createdAt: parseTodayTime('10:00') },
+  { id: 'care-note-007', admissionId: 'admission-004', nurseId: 'nurse-004', content: '髋关节置换术后第3天，伤口敷料干燥无渗出，患肢末梢血运良好。', timestamp: parseTodayTime('09:15'), type: 'observation', createdAt: parseTodayTime('09:15') },
+  { id: 'care-note-008', admissionId: 'admission-004', nurseId: 'nurse-002', content: '遵医嘱予低分子肝素钙皮下注射qD，预防下肢深静脉血栓。', timestamp: parseTodayTime('10:15'), type: 'medication', createdAt: parseTodayTime('10:15') },
 ];
 
 const operationLogs: OperationLog[] = [
@@ -122,6 +129,14 @@ const checkIns: CheckIn[] = [
 
 const triageUndoRecords: TriageUndoRecord[] = [];
 
+const wardLeaveConfigs: WardLeaveConfig[] = [
+  { id: 'leave-cfg-A', zone: 'A', maxLeaveHours: 6, nightExitStartTime: '22:00', nightExitEndTime: '06:00', requireCompletedOrders: true, active: true, createdAt: now - 90 * dayMs },
+  { id: 'leave-cfg-B', zone: 'B', maxLeaveHours: 4, nightExitStartTime: '21:00', nightExitEndTime: '06:30', requireCompletedOrders: true, active: true, createdAt: now - 85 * dayMs },
+];
+
+const leaveRequests: LeaveRequest[] = [];
+const leaveAuditLogs: LeaveAuditLog[] = [];
+
 export interface SampleData {
   campuses: Campus[];
   nurses: Nurse[];
@@ -136,6 +151,9 @@ export interface SampleData {
   abnormalRecords: AbnormalRecord[];
   checkIns: CheckIn[];
   triageUndoRecords: TriageUndoRecord[];
+  leaveRequests: LeaveRequest[];
+  leaveAuditLogs: LeaveAuditLog[];
+  wardLeaveConfigs: WardLeaveConfig[];
 }
 
 export const sampleData: SampleData = {
@@ -152,6 +170,9 @@ export const sampleData: SampleData = {
   abnormalRecords,
   checkIns,
   triageUndoRecords,
+  leaveRequests,
+  leaveAuditLogs,
+  wardLeaveConfigs,
 };
 
 export const SAMPLE_DATA_COUNTS = {
@@ -168,4 +189,7 @@ export const SAMPLE_DATA_COUNTS = {
   abnormalRecords: abnormalRecords.length,
   checkIns: checkIns.length,
   triageUndoRecords: triageUndoRecords.length,
+  leaveRequests: leaveRequests.length,
+  leaveAuditLogs: leaveAuditLogs.length,
+  wardLeaveConfigs: wardLeaveConfigs.length,
 };

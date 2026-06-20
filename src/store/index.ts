@@ -39,6 +39,12 @@ import type {
   TriageUndoRecord,
   AppointmentQueryType,
   AppointmentQueryResult,
+  LeaveRequest,
+  LeaveAuditLog,
+  WardLeaveConfig,
+  LeaveStatus,
+  LeaveActionType,
+  CreateLeaveRequestPayload,
 } from '../types';
 import { sampleData } from '../data/sampleData';
 import {
@@ -69,6 +75,9 @@ type PersistedState = {
   checkIns: CheckIn[];
   campuses: Campus[];
   triageUndoRecords: TriageUndoRecord[];
+  leaveRequests: LeaveRequest[];
+  leaveAuditLogs: LeaveAuditLog[];
+  wardLeaveConfigs: WardLeaveConfig[];
 };
 
 type AppState = PersistedState & {
@@ -156,6 +165,23 @@ type AppState = PersistedState & {
   addRestoreHistory: (record: Omit<RestoreHistoryRecord, 'id' | 'timestamp'>) => RestoreHistoryRecord;
   getLatestRestoreRecord: () => RestoreHistoryRecord | null;
   clearRestoreHistory: () => void;
+
+  addWardLeaveConfig: (cfg: Omit<WardLeaveConfig, 'id' | 'createdAt'>) => WardLeaveConfig;
+  updateWardLeaveConfig: (id: string, patch: Partial<WardLeaveConfig>) => { success: boolean; error?: string };
+  deleteWardLeaveConfig: (id: string) => void;
+  getWardLeaveConfig: (zone: string) => WardLeaveConfig | null;
+
+  createLeaveRequest: (payload: CreateLeaveRequestPayload) => { success: boolean; error?: string; data?: LeaveRequest };
+  approveLeaveRequest: (leaveId: string, doctorId: string) => { success: boolean; error?: string };
+  rejectLeaveRequest: (leaveId: string, doctorId: string, reason: string) => { success: boolean; error?: string };
+  withdrawLeaveRequest: (leaveId: string, doctorId: string, reason: string) => { success: boolean; error?: string };
+  confirmLeaveDepart: (leaveId: string, nurseId: string) => { success: boolean; error?: string };
+  confirmLeaveReturn: (leaveId: string, nurseId: string) => { success: boolean; error?: string };
+  getLeaveRequestsByAdmission: (admissionId: string) => LeaveRequest[];
+  getLeaveRequestsByPatient: (patientId: string) => LeaveRequest[];
+  getLeaveRequestsByZone: (zone: string) => LeaveRequest[];
+  getLeaveAuditLogs: (leaveId: string) => LeaveAuditLog[];
+  checkPendingOrders: (admissionId: string) => boolean;
 };
 
 type StoreGet = () => AppState;
@@ -180,6 +206,9 @@ const initialPersisted: PersistedState = {
   checkIns: [],
   campuses: [],
   triageUndoRecords: [],
+  leaveRequests: [],
+  leaveAuditLogs: [],
+  wardLeaveConfigs: [],
 };
 
 function deriveCurrentUser(state: PersistedState): Nurse | null {
@@ -249,6 +278,49 @@ function addAbnormalRecord(
   };
   set({ abnormalRecords: [record, ...state.abnormalRecords] });
   return id;
+}
+
+function addLeaveAuditLog(
+  set: StoreSet,
+  get: StoreGet,
+  params: {
+    leaveRequestId: string;
+    action: LeaveActionType;
+    operator: Nurse | null;
+    previousStatus?: LeaveStatus;
+    newStatus: LeaveStatus;
+    reason?: string;
+  },
+): string {
+  const id = genId();
+  const state = get();
+  const log: LeaveAuditLog = {
+    id,
+    leaveRequestId: params.leaveRequestId,
+    action: params.action,
+    operatorId: params.operator?.id ?? 'system',
+    operatorName: params.operator?.name ?? '系统',
+    previousStatus: params.previousStatus,
+    newStatus: params.newStatus,
+    reason: params.reason,
+    timestamp: Date.now(),
+  };
+  set({ leaveAuditLogs: [log, ...state.leaveAuditLogs] });
+  return id;
+}
+
+function isTimeInNightRange(ts: number, startTime: string, endTime: string): boolean {
+  const d = new Date(ts);
+  const mins = d.getHours() * 60 + d.getMinutes();
+  const [sh, sm] = startTime.split(':').map(Number);
+  const [eh, em] = endTime.split(':').map(Number);
+  const startMins = sh * 60 + sm;
+  const endMins = eh * 60 + em;
+  if (startMins <= endMins) {
+    return mins >= startMins && mins < endMins;
+  } else {
+    return mins >= startMins || mins < endMins;
+  }
 }
 
 function validateAppointmentOverlap(
@@ -399,11 +471,12 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         isAbnormal?: boolean;
         abnormalReason?: string;
         approvedBy?: string;
+        operator?: Nurse | null;
       },
     ) =>
       addOperationLog(set, get, {
         type,
-        operator: get().currentUser,
+        operator: opts?.operator ?? get().currentUser,
         targetType,
         detail,
         targetId: opts?.targetId,
@@ -1865,6 +1938,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         abnormalRecords: [...sampleData.abnormalRecords],
         checkIns: [...sampleData.checkIns],
         triageUndoRecords: [...(sampleData as any).triageUndoRecords ?? []],
+        leaveRequests: [...(sampleData as any).leaveRequests ?? []],
+        leaveAuditLogs: [...(sampleData as any).leaveAuditLogs ?? []],
+        wardLeaveConfigs: [...(sampleData as any).wardLeaveConfigs ?? []],
         currentUserId: null,
         currentUser: null,
         currentNurse: null,
@@ -1985,6 +2061,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
         checkIns: JSON.parse(JSON.stringify(state.checkIns)),
         triageUndoRecords: JSON.parse(JSON.stringify(state.triageUndoRecords)),
+        leaveRequests: JSON.parse(JSON.stringify(state.leaveRequests)),
+        leaveAuditLogs: JSON.parse(JSON.stringify(state.leaveAuditLogs)),
+        wardLeaveConfigs: JSON.parse(JSON.stringify(state.wardLeaveConfigs)),
       };
       const backupFile: BackupFile = {
         version: 'v1',
@@ -2114,12 +2193,15 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         abnormalRecords: data?.abnormalRecords?.length ?? 0,
         checkIns: data?.checkIns?.length ?? 0,
         triageUndoRecords: data?.triageUndoRecords?.length ?? 0,
+        leaveRequests: data?.leaveRequests?.length ?? 0,
+        leaveAuditLogs: data?.leaveAuditLogs?.length ?? 0,
+        wardLeaveConfigs: data?.wardLeaveConfigs?.length ?? 0,
       };
 
       const entityKeys: BackupRestoreEntity[] = [
         'campuses', 'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
         'appointments', 'admissions', 'careNotes', 'operationLogs', 'abnormalRecords',
-        'checkIns', 'triageUndoRecords',
+        'checkIns', 'triageUndoRecords', 'leaveRequests', 'leaveAuditLogs', 'wardLeaveConfigs',
       ];
 
       const diff: RestoreDiff = {} as RestoreDiff;
@@ -2185,12 +2267,15 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
         checkIns: JSON.parse(JSON.stringify(state.checkIns)),
         triageUndoRecords: JSON.parse(JSON.stringify(state.triageUndoRecords)),
+        leaveRequests: JSON.parse(JSON.stringify(state.leaveRequests)),
+        leaveAuditLogs: JSON.parse(JSON.stringify(state.leaveAuditLogs)),
+        wardLeaveConfigs: JSON.parse(JSON.stringify(state.wardLeaveConfigs)),
       };
 
       const emptyOverview: Record<BackupRestoreEntity, number> = {
         campuses: 0, beds: 0, nurses: 0, isolationRules: 0, timeSlots: 0, patients: 0,
         appointments: 0, admissions: 0, careNotes: 0, operationLogs: 0, abnormalRecords: 0,
-        checkIns: 0, triageUndoRecords: 0,
+        checkIns: 0, triageUndoRecords: 0, leaveRequests: 0, leaveAuditLogs: 0, wardLeaveConfigs: 0,
       };
       const emptyDiff: RestoreDiff = {
         campuses: { added: 0, updated: 0, deleted: 0 },
@@ -2206,6 +2291,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         abnormalRecords: { added: 0, updated: 0, deleted: 0 },
         checkIns: { added: 0, updated: 0, deleted: 0 },
         triageUndoRecords: { added: 0, updated: 0, deleted: 0 },
+        leaveRequests: { added: 0, updated: 0, deleted: 0 },
+        leaveAuditLogs: { added: 0, updated: 0, deleted: 0 },
+        wardLeaveConfigs: { added: 0, updated: 0, deleted: 0 },
       };
       const emptyDetailedDiff = state.calculateDetailedDiff(beforeData, beforeData);
 
@@ -2293,6 +2381,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         abnormalRecords: JSON.parse(JSON.stringify(afterData.abnormalRecords ?? [])),
         checkIns: JSON.parse(JSON.stringify(afterData.checkIns ?? [])),
         triageUndoRecords: JSON.parse(JSON.stringify(afterData.triageUndoRecords ?? [])),
+        leaveRequests: JSON.parse(JSON.stringify(afterData.leaveRequests ?? [])),
+        leaveAuditLogs: JSON.parse(JSON.stringify(afterData.leaveAuditLogs ?? [])),
+        wardLeaveConfigs: JSON.parse(JSON.stringify(afterData.wardLeaveConfigs ?? [])),
         currentUserId: adminStillExists ? currentUser.id : null,
         currentUser: adminStillExists ? adminStillExists : null,
         currentNurse: adminStillExists ? adminStillExists : null,
@@ -2358,12 +2449,15 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
         checkIns: JSON.parse(JSON.stringify(state.checkIns)),
         triageUndoRecords: JSON.parse(JSON.stringify(state.triageUndoRecords)),
+        leaveRequests: JSON.parse(JSON.stringify(state.leaveRequests)),
+        leaveAuditLogs: JSON.parse(JSON.stringify(state.leaveAuditLogs)),
+        wardLeaveConfigs: JSON.parse(JSON.stringify(state.wardLeaveConfigs)),
       };
 
       const emptyOverview: Record<BackupRestoreEntity, number> = {
         campuses: 0, beds: 0, nurses: 0, isolationRules: 0, timeSlots: 0, patients: 0,
         appointments: 0, admissions: 0, careNotes: 0, operationLogs: 0, abnormalRecords: 0,
-        checkIns: 0, triageUndoRecords: 0,
+        checkIns: 0, triageUndoRecords: 0, leaveRequests: 0, leaveAuditLogs: 0, wardLeaveConfigs: 0,
       };
       const emptyDiff: RestoreDiff = {
         campuses: { added: 0, updated: 0, deleted: 0 },
@@ -2379,6 +2473,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         abnormalRecords: { added: 0, updated: 0, deleted: 0 },
         checkIns: { added: 0, updated: 0, deleted: 0 },
         triageUndoRecords: { added: 0, updated: 0, deleted: 0 },
+        leaveRequests: { added: 0, updated: 0, deleted: 0 },
+        leaveAuditLogs: { added: 0, updated: 0, deleted: 0 },
+        wardLeaveConfigs: { added: 0, updated: 0, deleted: 0 },
       };
       const emptyDetailedDiff = state.calculateDetailedDiff(beforeData, beforeData);
 
@@ -2459,6 +2556,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         abnormalRecords: JSON.parse(JSON.stringify(afterData.abnormalRecords ?? [])),
         checkIns: JSON.parse(JSON.stringify(afterData.checkIns ?? [])),
         triageUndoRecords: JSON.parse(JSON.stringify(afterData.triageUndoRecords ?? [])),
+        leaveRequests: JSON.parse(JSON.stringify(afterData.leaveRequests ?? [])),
+        leaveAuditLogs: JSON.parse(JSON.stringify(afterData.leaveAuditLogs ?? [])),
+        wardLeaveConfigs: JSON.parse(JSON.stringify(afterData.wardLeaveConfigs ?? [])),
         currentUserId: adminStillExists ? currentUser.id : null,
         currentUser: adminStillExists ? adminStillExists : null,
         currentNurse: adminStillExists ? adminStillExists : null,
@@ -2469,7 +2569,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const entityKeys: BackupRestoreEntity[] = [
         'campuses', 'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
         'appointments', 'admissions', 'careNotes', 'operationLogs', 'abnormalRecords',
-        'checkIns', 'triageUndoRecords',
+        'checkIns', 'triageUndoRecords', 'leaveRequests', 'leaveAuditLogs', 'wardLeaveConfigs',
       ];
       const dataOverview: Record<BackupRestoreEntity, number> = {} as Record<BackupRestoreEntity, number>;
       for (const key of entityKeys) {
@@ -2542,6 +2642,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
           abnormalRecords: JSON.parse(JSON.stringify(state.abnormalRecords)),
           checkIns: JSON.parse(JSON.stringify(state.checkIns)),
           triageUndoRecords: JSON.parse(JSON.stringify(state.triageUndoRecords)),
+          leaveRequests: JSON.parse(JSON.stringify(state.leaveRequests)),
+          leaveAuditLogs: JSON.parse(JSON.stringify(state.leaveAuditLogs)),
+          wardLeaveConfigs: JSON.parse(JSON.stringify(state.wardLeaveConfigs)),
         },
       };
 
@@ -2589,7 +2692,7 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const entityKeys: BackupRestoreEntity[] = [
         'campuses', 'beds', 'nurses', 'isolationRules', 'timeSlots', 'patients',
         'appointments', 'admissions', 'careNotes', 'operationLogs', 'abnormalRecords',
-        'checkIns', 'triageUndoRecords',
+        'checkIns', 'triageUndoRecords', 'leaveRequests', 'leaveAuditLogs', 'wardLeaveConfigs',
       ];
 
       const entityNameFields: Record<BackupRestoreEntity, string> = {
@@ -2606,6 +2709,9 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         abnormalRecords: 'id',
         checkIns: 'id',
         triageUndoRecords: 'id',
+        leaveRequests: 'id',
+        leaveAuditLogs: 'id',
+        wardLeaveConfigs: 'zone',
       };
 
       const result: RestoreDetailedDiff = {} as RestoreDetailedDiff;
@@ -2690,6 +2796,538 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
     clearRestoreHistory: (): void => {
       set({ restoreHistory: [] });
     },
+
+    addWardLeaveConfig: (cfg) => {
+      const id = genId();
+      const newCfg: WardLeaveConfig = { ...cfg, id, createdAt: Date.now() };
+      set({ wardLeaveConfigs: [...get().wardLeaveConfigs, newCfg] });
+      helpers.opLog(
+        'leave_config_change',
+        'leave_config',
+        `新增病区请假规则：病区${cfg.zone}，最长期限${cfg.maxLeaveHours}小时，禁出时段${cfg.nightExitStartTime}-${cfg.nightExitEndTime}${cfg.requireCompletedOrders ? '，需完成医嘱' : ''}`,
+        { targetId: id, targetName: `病区${cfg.zone}` },
+      );
+      return newCfg;
+    },
+
+    updateWardLeaveConfig: (id, patch) => {
+      const state = get();
+      const target = state.wardLeaveConfigs.find((c) => c.id === id);
+      if (!target) return { success: false, error: '病区请假规则不存在' };
+      set({
+        wardLeaveConfigs: state.wardLeaveConfigs.map((c) =>
+          c.id === id ? { ...c, ...patch } : c,
+        ),
+      });
+      helpers.opLog(
+        'leave_config_change',
+        'leave_config',
+        `修改病区${target.zone}请假规则`,
+        { targetId: id, targetName: `病区${patch.zone ?? target.zone}` },
+      );
+      return { success: true };
+    },
+
+    deleteWardLeaveConfig: (id) => {
+      const state = get();
+      const target = state.wardLeaveConfigs.find((c) => c.id === id);
+      set({ wardLeaveConfigs: state.wardLeaveConfigs.filter((c) => c.id !== id) });
+      if (target) {
+        helpers.opLog(
+          'leave_config_change',
+          'leave_config',
+          `删除病区${target.zone}请假规则`,
+          { targetId: id, targetName: `病区${target.zone}` },
+        );
+      }
+    },
+
+    getWardLeaveConfig: (zone) => {
+      const state = get();
+      return (
+        state.wardLeaveConfigs.find((c) => c.zone === zone && c.active) ??
+        state.wardLeaveConfigs.find((c) => c.zone === zone) ??
+        null
+      );
+    },
+
+    checkPendingOrders: (admissionId) => {
+      const state = get();
+      const uncompletedCareNotes = state.careNotes.filter(
+        (n) =>
+          n.admissionId === admissionId &&
+          (n.type === 'medication' || n.type === 'treatment'),
+      );
+      return uncompletedCareNotes.length === 0;
+    },
+
+    createLeaveRequest: (payload) => {
+      const state = get();
+      const submitter = state.nurses.find((n) => n.id === payload.submittedBy);
+      if (!submitter) return { success: false, error: '提交人不存在' };
+
+      const admission = state.admissions.find((a) => a.id === payload.admissionId);
+      if (!admission) return { success: false, error: '入院记录不存在' };
+      if (admission.status !== 'in_bed') {
+        const opLogId = helpers.opLog(
+          'leave_request_create',
+          'leave_request',
+          `请假申请提交失败：患者已出院或状态异常`,
+          { targetId: payload.admissionId, isAbnormal: true, abnormalReason: 'leave_patient_discharged', operator: submitter },
+        );
+        helpers.abnRec('leave_patient_discharged', opLogId, '已出院或状态异常的患者不可提交请假申请', {
+          bedId: admission.bedId,
+        });
+        return { success: false, error: '该患者已出院或状态异常，不可请假' };
+      }
+
+      const patient = state.patients.find((p) => p.id === admission.patientId);
+      const bed = state.beds.find((b) => b.id === admission.bedId);
+      if (!bed) return { success: false, error: '床位信息缺失' };
+
+      const zone = bed.zone;
+      const cfg = state.getWardLeaveConfig(zone);
+
+      if (payload.expectedReturnTime <= payload.departTime) {
+        return { success: false, error: '预计返院时间必须晚于离院时间' };
+      }
+
+      const durationHours = (payload.expectedReturnTime - payload.departTime) / (1000 * 60 * 60);
+      if (cfg && durationHours > cfg.maxLeaveHours) {
+        const opLogId = helpers.opLog(
+          'leave_request_create',
+          'leave_request',
+          `请假申请提交失败：请假时长${durationHours.toFixed(1)}小时超出病区${zone}最大允许${cfg.maxLeaveHours}小时`,
+          { targetName: `${bed.bedNumber} ${patient?.name ?? ''}`, isAbnormal: true, abnormalReason: 'leave_duration_exceeded', operator: submitter },
+        );
+        helpers.abnRec('leave_duration_exceeded', opLogId, `请假时长超出病区${zone}最大允许${cfg.maxLeaveHours}小时`, {
+          bedId: bed.id,
+        });
+        return { success: false, error: `请假时长超出病区${zone}规定的最大期限（${cfg.maxLeaveHours}小时）` };
+      }
+
+      if (cfg) {
+        const departInNight = isTimeInNightRange(payload.departTime, cfg.nightExitStartTime, cfg.nightExitEndTime);
+        const returnInNight = isTimeInNightRange(payload.expectedReturnTime, cfg.nightExitStartTime, cfg.nightExitEndTime);
+        if (departInNight || returnInNight) {
+          const opLogId = helpers.opLog(
+            'leave_request_create',
+            'leave_request',
+            `请假申请提交失败：离院或返院时间处于夜间禁出时段${cfg.nightExitStartTime}-${cfg.nightExitEndTime}`,
+            { targetName: `${bed.bedNumber} ${patient?.name ?? ''}`, isAbnormal: true, abnormalReason: 'leave_night_forbidden', operator: submitter },
+          );
+          helpers.abnRec('leave_night_forbidden', opLogId, `离院或返院时间处于夜间禁出时段${cfg.nightExitStartTime}-${cfg.nightExitEndTime}`, {
+            bedId: bed.id,
+          });
+          return { success: false, error: `离院或返院时间处于夜间禁出时段（${cfg.nightExitStartTime}-${cfg.nightExitEndTime}）` };
+        }
+      }
+
+      const activeLeaveRequests = state.leaveRequests.filter(
+        (l) =>
+          l.patientId === admission.patientId &&
+          (l.status === 'pending' || l.status === 'approved' || l.status === 'departed'),
+      );
+      const hasOverlap = activeLeaveRequests.some(
+        (l) =>
+          payload.departTime < l.expectedReturnTime &&
+          payload.expectedReturnTime > l.departTime,
+      );
+      if (hasOverlap) {
+        const opLogId = helpers.opLog(
+          'leave_request_create',
+          'leave_request',
+          `请假申请提交失败：与已有请假时间重叠`,
+          { targetName: `${bed.bedNumber} ${patient?.name ?? ''}`, isAbnormal: true, abnormalReason: 'leave_time_overlap', operator: submitter },
+        );
+        helpers.abnRec('leave_time_overlap', opLogId, '提交的请假与已有请假时间重叠', {
+          bedId: bed.id,
+        });
+        return { success: false, error: '该患者存在时间重叠的请假申请，请先处理' };
+      }
+
+      if (cfg?.requireCompletedOrders && !state.checkPendingOrders(payload.admissionId)) {
+        const opLogId = helpers.opLog(
+          'leave_request_create',
+          'leave_request',
+          `请假申请提交失败：存在未完成的医嘱/护理`,
+          { targetName: `${bed.bedNumber} ${patient?.name ?? ''}`, isAbnormal: true, abnormalReason: 'leave_pending_orders', operator: submitter },
+        );
+        helpers.abnRec('leave_pending_orders', opLogId, '患者存在未完成的医嘱或护理任务', {
+          bedId: bed.id,
+        });
+        return { success: false, error: '患者存在未完成的医嘱/护理，请先完成后再申请请假' };
+      }
+
+      if (!payload.companionName.trim() || !payload.companionPhone.trim() || !payload.reason.trim()) {
+        return { success: false, error: '陪同人、联系方式、请假原因均为必填项' };
+      }
+
+      const id = genId();
+      const now = Date.now();
+      const leaveRequest: LeaveRequest = {
+        id,
+        admissionId: payload.admissionId,
+        patientId: admission.patientId,
+        bedId: admission.bedId,
+        zone,
+        departTime: payload.departTime,
+        expectedReturnTime: payload.expectedReturnTime,
+        companionName: payload.companionName,
+        companionPhone: payload.companionPhone,
+        reason: payload.reason,
+        status: 'pending',
+        submittedBy: payload.submittedBy,
+        submittedAt: now,
+        createdAt: now,
+      };
+
+      set({ leaveRequests: [leaveRequest, ...state.leaveRequests] });
+      addLeaveAuditLog(set, get, {
+        leaveRequestId: id,
+        action: 'submit',
+        operator: submitter,
+        newStatus: 'pending',
+        reason: payload.reason,
+      });
+      helpers.opLog(
+        'leave_request_create',
+        'leave_request',
+        `提交请假申请：${patient?.name ?? ''}（${bed.bedNumber}），计划${new Date(payload.departTime).toLocaleString('zh-CN', { hour12: false })}离院，${new Date(payload.expectedReturnTime).toLocaleString('zh-CN', { hour12: false })}返院，陪同人${payload.companionName}（${payload.companionPhone}）`,
+        { targetId: id, targetName: `${bed.bedNumber} ${patient?.name ?? ''}`, operator: submitter },
+      );
+      return { success: true, data: leaveRequest };
+    },
+
+    approveLeaveRequest: (leaveId, doctorId) => {
+      const state = get();
+      const doctor = state.nurses.find((n) => n.id === doctorId);
+      if (!doctor) return { success: false, error: '审批人不存在' };
+      if (doctor.role === 'normal') {
+        const opLogId = helpers.opLog(
+          'leave_request_approve',
+          'leave_request',
+          `权限不足：普通护士${doctor.name}无权审批请假`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_permission_denied', operator: doctor },
+        );
+        helpers.abnRec('leave_permission_denied', opLogId, '普通护士无权审批请假申请');
+        return { success: false, error: '普通护士无权审批请假，请联系高级护士或管理员' };
+      }
+
+      const leave = state.leaveRequests.find((l) => l.id === leaveId);
+      if (!leave) return { success: false, error: '请假申请不存在' };
+      if (leave.status !== 'pending') {
+        const opLogId = helpers.opLog(
+          'leave_request_approve',
+          'leave_request',
+          `审批失败：当前状态${leave.status}不可批准`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_status_invalid', operator: doctor },
+        );
+        helpers.abnRec('leave_status_invalid', opLogId, `请假申请当前状态${leave.status}不可批准`);
+        return { success: false, error: `当前状态（${leave.status}）不可批准` };
+      }
+
+      const patient = state.patients.find((p) => p.id === leave.patientId);
+      const bed = state.beds.find((b) => b.id === leave.bedId);
+
+      set({
+        leaveRequests: state.leaveRequests.map((l) =>
+          l.id === leaveId
+            ? { ...l, status: 'approved', approvedBy: doctorId, approvedAt: Date.now() }
+            : l,
+        ),
+      });
+      addLeaveAuditLog(set, get, {
+        leaveRequestId: leaveId,
+        action: 'approve',
+        operator: doctor,
+        previousStatus: 'pending',
+        newStatus: 'approved',
+      });
+      helpers.opLog(
+        'leave_request_approve',
+        'leave_request',
+        `批准请假：${doctor.name}批准${patient?.name ?? ''}（${bed?.bedNumber ?? ''}）的请假申请`,
+        { targetId: leaveId, targetName: `${bed?.bedNumber ?? ''} ${patient?.name ?? ''}`, operator: doctor },
+      );
+      return { success: true };
+    },
+
+    rejectLeaveRequest: (leaveId, doctorId, reason) => {
+      const state = get();
+      const doctor = state.nurses.find((n) => n.id === doctorId);
+      if (!doctor) return { success: false, error: '审批人不存在' };
+      if (doctor.role === 'normal') {
+        const opLogId = helpers.opLog(
+          'leave_request_reject',
+          'leave_request',
+          `权限不足：普通护士${doctor.name}无权驳回请假`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_permission_denied', operator: doctor },
+        );
+        helpers.abnRec('leave_permission_denied', opLogId, '普通护士无权驳回请假申请');
+        return { success: false, error: '普通护士无权驳回请假，请联系高级护士或管理员' };
+      }
+      if (!reason.trim()) return { success: false, error: '驳回原因不能为空' };
+
+      const leave = state.leaveRequests.find((l) => l.id === leaveId);
+      if (!leave) return { success: false, error: '请假申请不存在' };
+      if (leave.status !== 'pending') {
+        const opLogId = helpers.opLog(
+          'leave_request_reject',
+          'leave_request',
+          `驳回失败：当前状态${leave.status}不可驳回`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_status_invalid', operator: doctor },
+        );
+        helpers.abnRec('leave_status_invalid', opLogId, `请假申请当前状态${leave.status}不可驳回`);
+        return { success: false, error: `当前状态（${leave.status}）不可驳回` };
+      }
+
+      const patient = state.patients.find((p) => p.id === leave.patientId);
+      const bed = state.beds.find((b) => b.id === leave.bedId);
+
+      set({
+        leaveRequests: state.leaveRequests.map((l) =>
+          l.id === leaveId
+            ? { ...l, status: 'rejected', rejectedBy: doctorId, rejectedAt: Date.now(), rejectReason: reason }
+            : l,
+        ),
+      });
+      addLeaveAuditLog(set, get, {
+        leaveRequestId: leaveId,
+        action: 'reject',
+        operator: doctor,
+        previousStatus: 'pending',
+        newStatus: 'rejected',
+        reason,
+      });
+      helpers.opLog(
+        'leave_request_reject',
+        'leave_request',
+        `驳回请假：${doctor.name}驳回${patient?.name ?? ''}（${bed?.bedNumber ?? ''}）的请假申请，原因：${reason}`,
+        { targetId: leaveId, targetName: `${bed?.bedNumber ?? ''} ${patient?.name ?? ''}`, operator: doctor },
+      );
+      return { success: true };
+    },
+
+    withdrawLeaveRequest: (leaveId, doctorId, reason) => {
+      const state = get();
+      const doctor = state.nurses.find((n) => n.id === doctorId);
+      if (!doctor) return { success: false, error: '撤回人不存在' };
+      if (doctor.role === 'normal') {
+        const opLogId = helpers.opLog(
+          'leave_request_withdraw',
+          'leave_request',
+          `权限不足：普通护士${doctor.name}无权撤回已批准请假`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_permission_denied' },
+        );
+        helpers.abnRec('leave_permission_denied', opLogId, '普通护士无权撤回已批准请假申请');
+        return { success: false, error: '普通护士无权撤回请假，请联系高级护士或管理员' };
+      }
+      if (!reason.trim()) return { success: false, error: '撤回原因不能为空' };
+
+      const leave = state.leaveRequests.find((l) => l.id === leaveId);
+      if (!leave) return { success: false, error: '请假申请不存在' };
+      if (leave.status !== 'approved') {
+        const opLogId = helpers.opLog(
+          'leave_request_withdraw',
+          'leave_request',
+          `撤回失败：当前状态${leave.status}不可撤回`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_status_invalid' },
+        );
+        helpers.abnRec('leave_status_invalid', opLogId, `请假申请当前状态${leave.status}不可撤回`);
+        return { success: false, error: `当前状态（${leave.status}）不可撤回` };
+      }
+      if (leave.approvedBy && leave.approvedBy !== doctorId && doctor.role !== 'admin') {
+        return { success: false, error: '仅原批准人或管理员可撤回该请假申请' };
+      }
+
+      const patient = state.patients.find((p) => p.id === leave.patientId);
+      const bed = state.beds.find((b) => b.id === leave.bedId);
+
+      set({
+        leaveRequests: state.leaveRequests.map((l) =>
+          l.id === leaveId
+            ? { ...l, status: 'withdrawn', withdrawnBy: doctorId, withdrawnAt: Date.now(), withdrawReason: reason }
+            : l,
+        ),
+      });
+      addLeaveAuditLog(set, get, {
+        leaveRequestId: leaveId,
+        action: 'withdraw',
+        operator: doctor,
+        previousStatus: 'approved',
+        newStatus: 'withdrawn',
+        reason,
+      });
+      helpers.opLog(
+        'leave_request_withdraw',
+        'leave_request',
+        `撤回请假：${doctor.name}撤回${patient?.name ?? ''}（${bed?.bedNumber ?? ''}）的请假批准，原因：${reason}`,
+        { targetId: leaveId, targetName: `${bed?.bedNumber ?? ''} ${patient?.name ?? ''}` },
+      );
+      return { success: true };
+    },
+
+    confirmLeaveDepart: (leaveId, nurseId) => {
+      const state = get();
+      const nurse = state.nurses.find((n) => n.id === nurseId);
+      if (!nurse) return { success: false, error: '确认人不存在' };
+
+      const leave = state.leaveRequests.find((l) => l.id === leaveId);
+      if (!leave) return { success: false, error: '请假申请不存在' };
+      if (leave.status !== 'approved') {
+        const opLogId = helpers.opLog(
+          'leave_depart_confirm',
+          'leave_request',
+          `离院确认失败：当前状态${leave.status}不可办理离院`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_status_invalid' },
+        );
+        helpers.abnRec('leave_status_invalid', opLogId, `请假申请当前状态${leave.status}不可办理离院`);
+        return { success: false, error: `当前状态（${leave.status}）不可办理离院，需先经医生批准` };
+      }
+
+      const admission = state.admissions.find((a) => a.id === leave.admissionId);
+      if (!admission || admission.status !== 'in_bed') {
+        const opLogId = helpers.opLog(
+          'leave_depart_confirm',
+          'leave_request',
+          `离院确认失败：患者已出院或状态异常`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_patient_discharged' },
+        );
+        helpers.abnRec('leave_patient_discharged', opLogId, '患者已出院或状态异常，不可办理离院');
+        return { success: false, error: '患者已出院或状态异常，不可办理离院' };
+      }
+
+      const patient = state.patients.find((p) => p.id === leave.patientId);
+      const bed = state.beds.find((b) => b.id === leave.bedId);
+
+      set({
+        leaveRequests: state.leaveRequests.map((l) =>
+          l.id === leaveId
+            ? { ...l, status: 'departed', actualDepartTime: Date.now(), departedBy: nurseId }
+            : l,
+        ),
+      });
+      addLeaveAuditLog(set, get, {
+        leaveRequestId: leaveId,
+        action: 'confirm_depart',
+        operator: nurse,
+        previousStatus: 'approved',
+        newStatus: 'departed',
+      });
+      helpers.opLog(
+        'leave_depart_confirm',
+        'leave_request',
+        `确认离院：护士${nurse.name}确认${patient?.name ?? ''}（${bed?.bedNumber ?? ''}）实际离院`,
+        { targetId: leaveId, targetName: `${bed?.bedNumber ?? ''} ${patient?.name ?? ''}` },
+      );
+      return { success: true };
+    },
+
+    confirmLeaveReturn: (leaveId, nurseId) => {
+      const state = get();
+      const nurse = state.nurses.find((n) => n.id === nurseId);
+      if (!nurse) return { success: false, error: '确认人不存在' };
+
+      const leave = state.leaveRequests.find((l) => l.id === leaveId);
+      if (!leave) return { success: false, error: '请假申请不存在' };
+      if (leave.status === 'returned') {
+        const opLogId = helpers.opLog(
+          'leave_return_confirm',
+          'leave_request',
+          `返院确认失败：该请假已销假，不可重复销假`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_duplicate_return' },
+        );
+        helpers.abnRec('leave_duplicate_return', opLogId, '请假申请已销假，重复销假被拦截');
+        return { success: false, error: '该请假已完成销假，不可重复操作' };
+      }
+      if (leave.status !== 'departed' && leave.status !== 'overdue_return') {
+        const opLogId = helpers.opLog(
+          'leave_return_confirm',
+          'leave_request',
+          `返院确认失败：当前状态${leave.status}不可办理返院`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_status_invalid' },
+        );
+        helpers.abnRec('leave_status_invalid', opLogId, `请假申请当前状态${leave.status}不可办理返院`);
+        return { success: false, error: `当前状态（${leave.status}）不可办理返院` };
+      }
+
+      const now = Date.now();
+      const isOverdue = now > leave.expectedReturnTime;
+      const actualReturnTime = now;
+
+      let finalStatus: LeaveStatus = 'returned';
+      if (isOverdue) {
+        finalStatus = 'overdue_return';
+        const opLogId = helpers.opLog(
+          'leave_return_confirm',
+          'leave_request',
+          `返院超时：实际返院时间晚于批准时限，批准返院时间${new Date(leave.expectedReturnTime).toLocaleString('zh-CN', { hour12: false })}，实际${new Date(actualReturnTime).toLocaleString('zh-CN', { hour12: false })}`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_return_overdue', operator: nurse },
+        );
+        helpers.abnRec('leave_return_overdue', opLogId, `返院时间晚于批准时限${new Date(leave.expectedReturnTime).toLocaleString('zh-CN', { hour12: false })}`);
+      }
+
+      const patient = state.patients.find((p) => p.id === leave.patientId);
+      const bed = state.beds.find((b) => b.id === leave.bedId);
+
+      set({
+        leaveRequests: state.leaveRequests.map((l) =>
+          l.id === leaveId
+            ? {
+                ...l,
+                status: finalStatus,
+                actualReturnTime,
+                returnedBy: nurseId,
+                overdue: isOverdue,
+              }
+            : l,
+        ),
+      });
+      addLeaveAuditLog(set, get, {
+        leaveRequestId: leaveId,
+        action: 'confirm_return',
+        operator: nurse,
+        previousStatus: leave.status,
+        newStatus: finalStatus,
+        reason: isOverdue ? '超时返院' : undefined,
+      });
+      helpers.opLog(
+        'leave_return_confirm',
+        'leave_request',
+        `确认返院：护士${nurse.name}确认${patient?.name ?? ''}（${bed?.bedNumber ?? ''}）${isOverdue ? '超时' : ''}返院${isOverdue ? '，已记入异常记录' : ''}`,
+        { targetId: leaveId, targetName: `${bed?.bedNumber ?? ''} ${patient?.name ?? ''}`, isAbnormal: isOverdue, operator: nurse },
+      );
+      return { success: true };
+    },
+
+    getLeaveRequestsByAdmission: (admissionId) => {
+      const state = get();
+      return state.leaveRequests
+        .filter((l) => l.admissionId === admissionId)
+        .sort((a, b) => b.createdAt - a.createdAt);
+    },
+
+    getLeaveRequestsByPatient: (patientId) => {
+      const state = get();
+      return state.leaveRequests
+        .filter((l) => l.patientId === patientId)
+        .sort((a, b) => b.createdAt - a.createdAt);
+    },
+
+    getLeaveRequestsByZone: (zone) => {
+      const state = get();
+      return state.leaveRequests
+        .filter((l) => l.zone === zone)
+        .sort((a, b) => b.createdAt - a.createdAt);
+    },
+
+    getLeaveAuditLogs: (leaveId) => {
+      const state = get();
+      return state.leaveAuditLogs
+        .filter((l) => l.leaveRequestId === leaveId)
+        .sort((a, b) => a.timestamp - b.timestamp);
+    },
   };
 };
 
@@ -2710,6 +3348,9 @@ const persistedKeys: (keyof PersistedState)[] = [
   'currentUserId',
   'checkIns',
   'triageUndoRecords',
+  'leaveRequests',
+  'leaveAuditLogs',
+  'wardLeaveConfigs',
 ];
 
 function deriveFromPartial(state: Partial<AppState>): Nurse | null {

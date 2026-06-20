@@ -64,6 +64,13 @@ const OPERATION_LABELS: Record<OperationType, { label: string; icon: any; color:
   backup_restore: { label: '备份恢复', icon: Upload, color: 'text-purple-600 bg-purple-50 border-purple-200' },
   backup_restore_rollback: { label: '恢复回滚', icon: RotateCcw, color: 'text-amber-600 bg-amber-50 border-amber-200' },
   backup_auto_snapshot: { label: '自动快照', icon: Archive, color: 'text-teal-600 bg-teal-50 border-teal-200' },
+  leave_request_create: { label: '请假申请', icon: CalendarDays, color: 'text-sky-600 bg-sky-50 border-sky-200' },
+  leave_request_approve: { label: '请假批准', icon: CheckCircle2, color: 'text-emerald-600 bg-emerald-50 border-emerald-200' },
+  leave_request_reject: { label: '请假驳回', icon: XCircle, color: 'text-rose-600 bg-rose-50 border-rose-200' },
+  leave_request_withdraw: { label: '请假撤回', icon: RotateCcw, color: 'text-amber-600 bg-amber-50 border-amber-200' },
+  leave_depart_confirm: { label: '离院确认', icon: ArrowLeft, color: 'text-orange-600 bg-orange-50 border-orange-200' },
+  leave_return_confirm: { label: '返院确认', icon: UserCheck, color: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
+  leave_config_change: { label: '请假规则配置', icon: Settings, color: 'text-purple-600 bg-purple-50 border-purple-200' },
 };
 
 const ABNORMAL_LABELS: Record<AbnormalType, { label: string; icon: any; color: string }> = {
@@ -89,6 +96,15 @@ const ABNORMAL_LABELS: Record<AbnormalType, { label: string; icon: any; color: s
   backup_patient_duplicate_admission: { label: '患者重复在床', icon: Users, color: 'text-red-700 bg-red-50 border-red-200' },
   backup_missing_required_field: { label: '缺少必需字段', icon: AlertCircle, color: 'text-red-700 bg-red-50 border-red-200' },
   backup_permission_denied: { label: '无操作权限', icon: ShieldAlert, color: 'text-red-700 bg-red-50 border-red-200' },
+  leave_duration_exceeded: { label: '请假超时长', icon: Clock, color: 'text-red-700 bg-red-50 border-red-200' },
+  leave_night_forbidden: { label: '夜间禁出时段', icon: Clock, color: 'text-indigo-700 bg-indigo-50 border-indigo-200' },
+  leave_pending_orders: { label: '未完成医嘱', icon: FileWarning, color: 'text-amber-700 bg-amber-50 border-amber-200' },
+  leave_time_overlap: { label: '请假时段重叠', icon: Clock, color: 'text-red-700 bg-red-50 border-red-200' },
+  leave_patient_discharged: { label: '患者已出院', icon: XCircle, color: 'text-rose-700 bg-rose-50 border-rose-200' },
+  leave_duplicate_return: { label: '重复销假', icon: AlertCircle, color: 'text-red-700 bg-red-50 border-red-200' },
+  leave_return_overdue: { label: '返院超时', icon: AlertTriangle, color: 'text-orange-700 bg-orange-50 border-orange-200' },
+  leave_permission_denied: { label: '请假越权', icon: ShieldAlert, color: 'text-rose-700 bg-rose-50 border-rose-200' },
+  leave_status_invalid: { label: '请假状态错误', icon: AlertTriangle, color: 'text-amber-700 bg-amber-50 border-amber-200' },
 };
 
 function formatDateTime(ts: number): string {
