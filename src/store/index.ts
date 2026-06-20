@@ -52,6 +52,7 @@ import {
   getTodayStr,
   birthdayMatches,
 } from '../lib/utils';
+import { canPerformLeaveAction } from '../lib/leavePermission';
 
 const STORE_KEY = 'dayward-board:v1';
 
@@ -3003,15 +3004,16 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const state = get();
       const doctor = state.nurses.find((n) => n.id === doctorId);
       if (!doctor) return { success: false, error: '审批人不存在' };
-      if (doctor.role === 'normal') {
+      const perm = canPerformLeaveAction(doctor.role, 'approve');
+      if (!perm.allowed) {
         const opLogId = helpers.opLog(
           'leave_request_approve',
           'leave_request',
-          `权限不足：普通护士${doctor.name}无权审批请假`,
+          `权限不足：${doctor.name}无权审批请假`,
           { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_permission_denied', operator: doctor },
         );
-        helpers.abnRec('leave_permission_denied', opLogId, '普通护士无权审批请假申请');
-        return { success: false, error: '普通护士无权审批请假，请联系高级护士或管理员' };
+        helpers.abnRec('leave_permission_denied', opLogId, `${doctor.role === 'normal' ? '普通护士' : '管理员'}无权审批请假申请`);
+        return { success: false, error: perm.reason! };
       }
 
       const leave = state.leaveRequests.find((l) => l.id === leaveId);
@@ -3057,15 +3059,16 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const state = get();
       const doctor = state.nurses.find((n) => n.id === doctorId);
       if (!doctor) return { success: false, error: '审批人不存在' };
-      if (doctor.role === 'normal') {
+      const perm = canPerformLeaveAction(doctor.role, 'reject');
+      if (!perm.allowed) {
         const opLogId = helpers.opLog(
           'leave_request_reject',
           'leave_request',
-          `权限不足：普通护士${doctor.name}无权驳回请假`,
+          `权限不足：${doctor.name}无权驳回请假`,
           { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_permission_denied', operator: doctor },
         );
-        helpers.abnRec('leave_permission_denied', opLogId, '普通护士无权驳回请假申请');
-        return { success: false, error: '普通护士无权驳回请假，请联系高级护士或管理员' };
+        helpers.abnRec('leave_permission_denied', opLogId, `${doctor.role === 'normal' ? '普通护士' : '管理员'}无权驳回请假申请`);
+        return { success: false, error: perm.reason! };
       }
       if (!reason.trim()) return { success: false, error: '驳回原因不能为空' };
 
@@ -3113,20 +3116,24 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const state = get();
       const doctor = state.nurses.find((n) => n.id === doctorId);
       if (!doctor) return { success: false, error: '撤回人不存在' };
-      if (doctor.role === 'normal') {
-        const opLogId = helpers.opLog(
-          'leave_request_withdraw',
-          'leave_request',
-          `权限不足：普通护士${doctor.name}无权撤回已批准请假`,
-          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_permission_denied' },
-        );
-        helpers.abnRec('leave_permission_denied', opLogId, '普通护士无权撤回已批准请假申请');
-        return { success: false, error: '普通护士无权撤回请假，请联系高级护士或管理员' };
-      }
-      if (!reason.trim()) return { success: false, error: '撤回原因不能为空' };
 
       const leave = state.leaveRequests.find((l) => l.id === leaveId);
       if (!leave) return { success: false, error: '请假申请不存在' };
+
+      const isOriginalApprover = leave.approvedBy === doctorId;
+      const perm = canPerformLeaveAction(doctor.role, 'withdraw', { isOriginalApprover });
+      if (!perm.allowed) {
+        const opLogId = helpers.opLog(
+          'leave_request_withdraw',
+          'leave_request',
+          `权限不足：${doctor.name}无权撤回请假`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_permission_denied', operator: doctor },
+        );
+        helpers.abnRec('leave_permission_denied', opLogId, perm.reason!);
+        return { success: false, error: perm.reason! };
+      }
+      if (!reason.trim()) return { success: false, error: '撤回原因不能为空' };
+
       if (leave.status !== 'approved') {
         const opLogId = helpers.opLog(
           'leave_request_withdraw',
@@ -3136,9 +3143,6 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
         );
         helpers.abnRec('leave_status_invalid', opLogId, `请假申请当前状态${leave.status}不可撤回`);
         return { success: false, error: `当前状态（${leave.status}）不可撤回` };
-      }
-      if (leave.approvedBy && leave.approvedBy !== doctorId && doctor.role !== 'admin') {
-        return { success: false, error: '仅原批准人或管理员可撤回该请假申请' };
       }
 
       const patient = state.patients.find((p) => p.id === leave.patientId);
@@ -3172,6 +3176,17 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const state = get();
       const nurse = state.nurses.find((n) => n.id === nurseId);
       if (!nurse) return { success: false, error: '确认人不存在' };
+      const perm = canPerformLeaveAction(nurse.role, 'confirm_depart');
+      if (!perm.allowed) {
+        const opLogId = helpers.opLog(
+          'leave_depart_confirm',
+          'leave_request',
+          `权限不足：${nurse.name}无权办理离院登记`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_permission_denied', operator: nurse },
+        );
+        helpers.abnRec('leave_permission_denied', opLogId, perm.reason!);
+        return { success: false, error: perm.reason! };
+      }
 
       const leave = state.leaveRequests.find((l) => l.id === leaveId);
       if (!leave) return { success: false, error: '请假申请不存在' };
@@ -3228,6 +3243,17 @@ const buildStore = (set: StoreSet, get: StoreGet): AppState => {
       const state = get();
       const nurse = state.nurses.find((n) => n.id === nurseId);
       if (!nurse) return { success: false, error: '确认人不存在' };
+      const perm = canPerformLeaveAction(nurse.role, 'confirm_return');
+      if (!perm.allowed) {
+        const opLogId = helpers.opLog(
+          'leave_return_confirm',
+          'leave_request',
+          `权限不足：${nurse.name}无权办理返院确认`,
+          { targetId: leaveId, isAbnormal: true, abnormalReason: 'leave_permission_denied', operator: nurse },
+        );
+        helpers.abnRec('leave_permission_denied', opLogId, perm.reason!);
+        return { success: false, error: perm.reason! };
+      }
 
       const leave = state.leaveRequests.find((l) => l.id === leaveId);
       if (!leave) return { success: false, error: '请假申请不存在' };

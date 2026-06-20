@@ -2664,7 +2664,7 @@ async function runAllTests() {
     }
   }
 
-  // Test 63: 越权限制 - 普通护士不能审批
+  // Test 63: 越权限制 - 普通护士和管理员不能审批/驳回/撤回
   {
     const store = createCleanStore();
     store.getState().importSampleData();
@@ -2695,12 +2695,20 @@ async function runAllTests() {
     // 普通护士审批 → 失败
     const apprByNormal = store.getState().approveLeaveRequest(leaveId, 'nurse-004');
     assertEqual(apprByNormal.success, false, '普通护士批准失败');
-    assert(apprByNormal.error?.includes('无权') || apprByNormal.error?.includes('权限'), '错误含权限提示');
+    assert(apprByNormal.error?.includes('无权') || apprByNormal.error?.includes('医生'), '错误含权限提示');
     const sAfter1 = store.getState();
     const abn1 = sAfter1.abnormalRecords.find((a: any) => a.type === 'leave_permission_denied');
-    assert(abn1, '异常记录: leave_permission_denied (approve)');
+    assert(abn1, '异常记录: leave_permission_denied (approve by normal)');
     const leaveAfter1 = sAfter1.leaveRequests.find((l: any) => l.id === leaveId);
     assertEqual(leaveAfter1?.status, 'pending', '状态仍为 pending');
+
+    // 管理员审批 → 失败（只有病区医生可以审批）
+    const apprByAdmin = store.getState().approveLeaveRequest(leaveId, 'nurse-001');
+    assertEqual(apprByAdmin.success, false, '管理员批准失败');
+    assert(apprByAdmin.error?.includes('无权') || apprByAdmin.error?.includes('医生'), '管理员审批错误含权限提示');
+    const sAfter1b = store.getState();
+    const abn1b = sAfter1b.abnormalRecords.filter((a: any) => a.type === 'leave_permission_denied');
+    assert(abn1b.length >= 2, '异常记录: leave_permission_denied (approve by admin)');
 
     // 普通护士驳回 → 失败
     const rejectByNormal = store.getState().rejectLeaveRequest(leaveId, 'nurse-004', '普通护士驳回');
@@ -2709,16 +2717,27 @@ async function runAllTests() {
     const leaveAfter2 = sAfter2.leaveRequests.find((l: any) => l.id === leaveId);
     assertEqual(leaveAfter2?.status, 'pending', '驳回也被拦截，状态仍为 pending');
 
-    // 高级护士先批准
+    // 管理员驳回 → 失败
+    const rejectByAdmin = store.getState().rejectLeaveRequest(leaveId, 'nurse-001', '管理员驳回');
+    assertEqual(rejectByAdmin.success, false, '管理员驳回失败');
+
+    // 高级护士（病区医生）批准 → 成功
     const apprBySenior = store.getState().approveLeaveRequest(leaveId, 'nurse-002');
     assertEqual(apprBySenior.success, true, '高级护士批准成功');
 
-    // 普通护士撤回 → 失败（既不是原批准人也不是admin）
+    // 普通护士撤回 → 失败
     const withdrawByNormal = store.getState().withdrawLeaveRequest(leaveId, 'nurse-004', '普通护士撤回');
     assertEqual(withdrawByNormal.success, false, '普通护士撤回失败');
     const sAfter3 = store.getState();
     const leaveAfter3 = sAfter3.leaveRequests.find((l: any) => l.id === leaveId);
     assertEqual(leaveAfter3?.status, 'approved', '状态保持 approved');
+
+    // 管理员撤回 → 失败（管理员无权撤回）
+    const withdrawByAdmin = store.getState().withdrawLeaveRequest(leaveId, 'nurse-001', '管理员撤回');
+    assertEqual(withdrawByAdmin.success, false, '管理员撤回失败');
+    const sAfter3b = store.getState();
+    const leaveAfter3b = sAfter3b.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leaveAfter3b?.status, 'approved', '管理员撤回后状态仍为 approved');
 
     // 高级护士（原批准人）撤回 → 成功
     const withdrawBySenior = store.getState().withdrawLeaveRequest(leaveId, 'nurse-002', '原批准人撤回');
@@ -2729,7 +2748,7 @@ async function runAllTests() {
     assertEqual(leaveAfter4?.withdrawnBy, 'nurse-002', '撤回人正确');
     assertEqual(leaveAfter4?.withdrawReason, '原批准人撤回', '撤回原因正确');
 
-    pass('Test 63: 越权限制 - 普通护士不能批准/驳回/撤回他人批准，仅护士确认离院返院可操作');
+    pass('Test 63: 越权限制 - 普通护士和管理员不能审批/驳回/撤回，仅病区医生（senior）可操作');
   }
 
   // Test 64: 撤回恢复（批准→撤回→再批准→正常走流程）
@@ -2755,31 +2774,36 @@ async function runAllTests() {
       companionName: '家属',
       companionPhone: '13800138000',
       reason: '撤回恢复测试',
-      submittedBy: 'nurse-001',
+      submittedBy: 'nurse-004',
     });
     assertEqual(createR.success, true, '申请创建成功');
     const leaveId = createR.data!.id;
 
-    const apprR = store.getState().approveLeaveRequest(leaveId, 'nurse-001');
-    assertEqual(apprR.success, true, 'admin 批准成功');
+    // 病区医生（senior）批准
+    const apprR = store.getState().approveLeaveRequest(leaveId, 'nurse-002');
+    assertEqual(apprR.success, true, '病区医生批准成功');
 
-    // 另一位高级护士（非原批准人）尝试撤回 → 失败（非admin撤回他人批准）
-    const wrongWithdraw = store.getState().withdrawLeaveRequest(leaveId, 'nurse-002', '他人批准的撤回尝试');
-    assertEqual(wrongWithdraw.success, false, '非原批准人撤回他人批准被拒（非admin）');
+    // 管理员尝试撤回 → 失败（管理员无权撤回）
+    const adminWithdraw = store.getState().withdrawLeaveRequest(leaveId, 'nurse-001', '管理员撤回尝试');
+    assertEqual(adminWithdraw.success, false, '管理员撤回被拒');
 
-    // admin 撤回 → 成功（admin可撤回任何批准）
-    const withdrawR = store.getState().withdrawLeaveRequest(leaveId, 'nurse-001', 'admin 撤回自己的批准');
-    assertEqual(withdrawR.success, true, 'admin 撤回成功');
+    // 另一位病区医生（非原批准人）尝试撤回 → 失败（非原批准人）
+    const wrongWithdraw = store.getState().withdrawLeaveRequest(leaveId, 'nurse-003', '他人批准的撤回尝试');
+    assertEqual(wrongWithdraw.success, false, '非原批准人撤回他人批准被拒');
+
+    // 原批准人撤回 → 成功
+    const withdrawR = store.getState().withdrawLeaveRequest(leaveId, 'nurse-002', '原批准人撤回');
+    assertEqual(withdrawR.success, true, '原批准人撤回成功');
     const sAfter = store.getState();
     const leaveW = sAfter.leaveRequests.find((l: any) => l.id === leaveId);
     assertEqual(leaveW?.status, 'withdrawn', '状态为已撤回');
     const auditAfterW = sAfter.getLeaveAuditLogs(leaveId);
     const wLog = auditAfterW.find((a: any) => a.action === 'withdraw');
     assert(wLog, '审计轨迹包含 withdraw');
-    assertEqual(wLog.reason, 'admin 撤回自己的批准', '撤回原因记入审计');
+    assertEqual(wLog.reason, '原批准人撤回', '撤回原因记入审计');
 
     // 再批准：已撤回状态不能再直接approve（需新建）
-    const reApproveR = store.getState().approveLeaveRequest(leaveId, 'nurse-001');
+    const reApproveR = store.getState().approveLeaveRequest(leaveId, 'nurse-002');
     assertEqual(reApproveR.success, false, '已撤回的请假不能再批准，状态转移非法');
     const sAfter2 = store.getState();
     const abnInvalid = sAfter2.abnormalRecords.find((a: any) => a.type === 'leave_status_invalid');
@@ -2793,11 +2817,11 @@ async function runAllTests() {
       companionName: '家属',
       companionPhone: '13800138000',
       reason: '撤回后重新申请',
-      submittedBy: 'nurse-001',
+      submittedBy: 'nurse-004',
     });
     assertEqual(createR2.success, true, '撤回后可以重新提交新的请假申请（成功）');
     const leaveId2 = createR2.data!.id;
-    const apprR2 = store.getState().approveLeaveRequest(leaveId2, 'nurse-001');
+    const apprR2 = store.getState().approveLeaveRequest(leaveId2, 'nurse-003');
     assertEqual(apprR2.success, true, '新申请批准成功');
     const depR2 = store.getState().confirmLeaveDepart(leaveId2, 'nurse-004');
     assertEqual(depR2.success, true, '新申请确认离院成功');
@@ -2838,11 +2862,11 @@ async function runAllTests() {
       companionName: '家属持久化',
       companionPhone: '13900139000',
       reason: '持久化测试请假',
-      submittedBy: 'nurse-001',
+      submittedBy: 'nurse-004',
     });
     assertEqual(createR.success, true, '申请创建成功');
     const leaveId = createR.data!.id;
-    s1.approveLeaveRequest(leaveId, 'nurse-001');
+    s1.approveLeaveRequest(leaveId, 'nurse-002');
     s1.confirmLeaveDepart(leaveId, 'nurse-004');
 
     const s1After = store1.getState();
@@ -2928,6 +2952,163 @@ async function runAllTests() {
     assert(backup.data.wardLeaveConfigs && backup.data.wardLeaveConfigs.length > 0, '备份包含 wardLeaveConfigs');
 
     pass('Test 65: 重启一致性 - 请假记录、审计轨迹、病区规则全部持久化还原，重启后可继续操作，备份导出也闭环');
+  }
+
+  // Test 66: 离院/返院权限边界 - 管理员不可办理离院返院
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const s = store.getState();
+    const picked = pickInBedAdmission(s, 'A');
+    if (!picked) throw new Error('找不到A区在床患者');
+
+    const noteIds = (s.careNotes || [])
+      .filter((n: any) => n.admissionId === picked.admission.id && (n.type === 'medication' || n.type === 'treatment'))
+      .map((n: any) => n.id);
+    if (noteIds.length > 0) {
+      store.setState({ careNotes: s.careNotes.filter((n: any) => !noteIds.includes(n.id)) });
+    }
+
+    const now = Date.now();
+    const createR = store.getState().createLeaveRequest({
+      admissionId: picked.admission.id,
+      departTime: now + 30 * 60 * 1000,
+      expectedReturnTime: now + 2 * 60 * 60 * 1000,
+      companionName: '家属',
+      companionPhone: '13800138000',
+      reason: '离院返院权限测试',
+      submittedBy: 'nurse-004',
+    });
+    assertEqual(createR.success, true, '请假申请创建成功');
+    const leaveId = createR.data!.id;
+
+    const apprR = store.getState().approveLeaveRequest(leaveId, 'nurse-002');
+    assertEqual(apprR.success, true, '病区医生批准成功');
+
+    // 管理员确认离院 → 失败
+    const departByAdmin = store.getState().confirmLeaveDepart(leaveId, 'nurse-001');
+    assertEqual(departByAdmin.success, false, '管理员不可办理离院登记');
+    assert(departByAdmin.error?.includes('无权') || departByAdmin.error?.includes('护士') || departByAdmin.error?.includes('医生'), '错误含权限提示');
+    const sAfter1 = store.getState();
+    const leave1 = sAfter1.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leave1?.status, 'approved', '状态仍为 approved');
+
+    // 普通护士确认离院 → 成功
+    const departByNormal = store.getState().confirmLeaveDepart(leaveId, 'nurse-004');
+    assertEqual(departByNormal.success, true, '普通护士可办理离院登记');
+    const sAfter2 = store.getState();
+    const leave2 = sAfter2.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leave2?.status, 'departed', '状态变为 departed');
+
+    // 管理员确认返院 → 失败
+    const returnByAdmin = store.getState().confirmLeaveReturn(leaveId, 'nurse-001');
+    assertEqual(returnByAdmin.success, false, '管理员不可办理返院确认');
+
+    // 普通护士确认返院 → 成功
+    const returnByNormal = store.getState().confirmLeaveReturn(leaveId, 'nurse-004');
+    assertEqual(returnByNormal.success, true, '普通护士可办理返院确认');
+    const sAfter3 = store.getState();
+    const leave3 = sAfter3.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leave3?.status, 'returned', '状态变为 returned');
+
+    pass('Test 66: 离院/返院权限边界 - 管理员不可办理，护士和医生可办理');
+  }
+
+  // Test 67: 角色变更后权限重新评估 - 原senior批准后被降级为normal
+  {
+    const store = createCleanStore();
+    store.getState().importSampleData();
+    const s = store.getState();
+    const picked = pickInBedAdmission(s, 'A');
+    if (!picked) throw new Error('找不到A区在床患者');
+
+    const noteIds = (s.careNotes || [])
+      .filter((n: any) => n.admissionId === picked.admission.id && (n.type === 'medication' || n.type === 'treatment'))
+      .map((n: any) => n.id);
+    if (noteIds.length > 0) {
+      store.setState({ careNotes: s.careNotes.filter((n: any) => !noteIds.includes(n.id)) });
+    }
+
+    const now = Date.now();
+    const createR = store.getState().createLeaveRequest({
+      admissionId: picked.admission.id,
+      departTime: now + 30 * 60 * 1000,
+      expectedReturnTime: now + 2 * 60 * 60 * 1000,
+      companionName: '家属',
+      companionPhone: '13800138000',
+      reason: '角色变更权限测试',
+      submittedBy: 'nurse-004',
+    });
+    assertEqual(createR.success, true, '请假申请创建成功');
+    const leaveId = createR.data!.id;
+
+    // nurse-002 (senior) 批准
+    const apprR = store.getState().approveLeaveRequest(leaveId, 'nurse-002');
+    assertEqual(apprR.success, true, 'senior批准成功');
+
+    // 将 nurse-002 降级为 normal
+    store.getState().updateNurseRole('nurse-002', 'normal');
+    const updatedNurse = store.getState().nurses.find((n: any) => n.id === 'nurse-002');
+    assertEqual(updatedNurse?.role, 'normal', '角色已降为normal');
+
+    // 降级后的原批准人尝试撤回 → 失败（当前角色无权）
+    const withdrawR = store.getState().withdrawLeaveRequest(leaveId, 'nurse-002', '降级后撤回');
+    assertEqual(withdrawR.success, false, '降级后原批准人不可撤回');
+    const sAfter = store.getState();
+    const leaveAfter = sAfter.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leaveAfter?.status, 'approved', '状态保持 approved');
+
+    // 恢复 nurse-002 为 senior
+    store.getState().updateNurseRole('nurse-002', 'senior');
+
+    // 恢复后原批准人撤回 → 成功
+    const withdrawR2 = store.getState().withdrawLeaveRequest(leaveId, 'nurse-002', '恢复后撤回');
+    assertEqual(withdrawR2.success, true, '恢复角色后原批准人可撤回');
+    const sAfter2 = store.getState();
+    const leaveAfter2 = sAfter2.leaveRequests.find((l: any) => l.id === leaveId);
+    assertEqual(leaveAfter2?.status, 'withdrawn', '状态已撤回');
+
+    pass('Test 67: 角色变更后权限重新评估 - 降级后不可撤回，恢复后可撤回');
+  }
+
+  // Test 68: 集中权限函数一致性 - canPerformLeaveAction 与 store 行为对齐
+  {
+    const { canPerformLeaveAction } = await import('../src/lib/leavePermission.js');
+
+    // approve: 只有 senior 可以
+    assertEqual(canPerformLeaveAction('senior', 'approve').allowed, true, 'senior 可审批');
+    assertEqual(canPerformLeaveAction('normal', 'approve').allowed, false, 'normal 不可审批');
+    assertEqual(canPerformLeaveAction('admin', 'approve').allowed, false, 'admin 不可审批');
+
+    // reject: 只有 senior 可以
+    assertEqual(canPerformLeaveAction('senior', 'reject').allowed, true, 'senior 可驳回');
+    assertEqual(canPerformLeaveAction('normal', 'reject').allowed, false, 'normal 不可驳回');
+    assertEqual(canPerformLeaveAction('admin', 'reject').allowed, false, 'admin 不可驳回');
+
+    // withdraw: senior + 原批准人
+    assertEqual(canPerformLeaveAction('senior', 'withdraw', { isOriginalApprover: true }).allowed, true, 'senior 原批准人可撤回');
+    assertEqual(canPerformLeaveAction('senior', 'withdraw', { isOriginalApprover: false }).allowed, false, 'senior 非原批准人不可撤回');
+    assertEqual(canPerformLeaveAction('normal', 'withdraw', { isOriginalApprover: true }).allowed, false, 'normal 不可撤回');
+    assertEqual(canPerformLeaveAction('admin', 'withdraw', { isOriginalApprover: true }).allowed, false, 'admin 不可撤回');
+
+    // confirm_depart/confirm_return: senior 和 normal 可以
+    assertEqual(canPerformLeaveAction('senior', 'confirm_depart').allowed, true, 'senior 可确认离院');
+    assertEqual(canPerformLeaveAction('normal', 'confirm_depart').allowed, true, 'normal 可确认离院');
+    assertEqual(canPerformLeaveAction('admin', 'confirm_depart').allowed, false, 'admin 不可确认离院');
+    assertEqual(canPerformLeaveAction('senior', 'confirm_return').allowed, true, 'senior 可确认返院');
+    assertEqual(canPerformLeaveAction('normal', 'confirm_return').allowed, true, 'normal 可确认返院');
+    assertEqual(canPerformLeaveAction('admin', 'confirm_return').allowed, false, 'admin 不可确认返院');
+
+    // create: 所有人可以
+    assertEqual(canPerformLeaveAction('senior', 'create').allowed, true, 'senior 可创建');
+    assertEqual(canPerformLeaveAction('normal', 'create').allowed, true, 'normal 可创建');
+    assertEqual(canPerformLeaveAction('admin', 'create').allowed, true, 'admin 可创建');
+
+    // null/undefined role
+    assertEqual(canPerformLeaveAction(null, 'approve').allowed, false, 'null role 不可审批');
+    assertEqual(canPerformLeaveAction(undefined, 'approve').allowed, false, 'undefined role 不可审批');
+
+    pass('Test 68: 集中权限函数一致性 - 所有角色×动作组合验证通过');
   }
 
   // ───────── 测试汇总 ─────────

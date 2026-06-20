@@ -21,8 +21,14 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '@/store';
 import { useToastStore } from '@/store/toast';
-import { RoleGate } from '@/components/RoleGate';
 import { ConfirmModal } from '@/components/ConfirmModal';
+import {
+  canApproveLeave,
+  canRejectLeave,
+  canWithdrawLeave,
+  canConfirmDepart,
+  canConfirmReturn,
+} from '@/lib/leavePermission';
 import type { LeaveRequest, LeaveStatus } from '@/types';
 
 const STATUS_LABELS: Record<LeaveStatus, { label: string; color: string; icon: any }> = {
@@ -340,36 +346,34 @@ export default function LeaveManagement() {
                         >
                           <FileText className="w-4 h-4" />
                         </button>
-                        <RoleGate allowed={['admin', 'senior']}>
-                          {lr.status === 'pending' && (
-                            <>
-                              <button
-                                onClick={() => handleApprove(lr.id)}
-                                className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
-                                title="批准"
-                              >
-                                <CheckCircle2 className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => setRejectModal({ open: true, leaveId: lr.id, reason: '' })}
-                                className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-md transition-colors"
-                                title="驳回"
-                              >
-                                <XCircle className="w-4 h-4" />
-                              </button>
-                            </>
-                          )}
-                          {lr.status === 'approved' && (
-                            <button
-                              onClick={() => setWithdrawModal({ open: true, leaveId: lr.id, reason: '' })}
-                              className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-md transition-colors"
-                              title="撤回批准"
-                            >
-                              <RefreshCcw className="w-4 h-4" />
-                            </button>
-                          )}
-                        </RoleGate>
-                        {lr.status === 'approved' && (
+                        {canApproveLeave(currentNurse?.role) && lr.status === 'pending' && (
+                          <button
+                            onClick={() => handleApprove(lr.id)}
+                            className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
+                            title="批准"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                          </button>
+                        )}
+                        {canRejectLeave(currentNurse?.role) && lr.status === 'pending' && (
+                          <button
+                            onClick={() => setRejectModal({ open: true, leaveId: lr.id, reason: '' })}
+                            className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-md transition-colors"
+                            title="驳回"
+                          >
+                            <XCircle className="w-4 h-4" />
+                          </button>
+                        )}
+                        {canWithdrawLeave(currentNurse?.role, lr.approvedBy === currentNurse?.id) && lr.status === 'approved' && (
+                          <button
+                            onClick={() => setWithdrawModal({ open: true, leaveId: lr.id, reason: '' })}
+                            className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-md transition-colors"
+                            title="撤回批准"
+                          >
+                            <RefreshCcw className="w-4 h-4" />
+                          </button>
+                        )}
+                        {canConfirmDepart(currentNurse?.role) && lr.status === 'approved' && (
                           <button
                             onClick={() => handleDepart(lr.id)}
                             className="p-1.5 text-orange-600 hover:bg-orange-50 rounded-md transition-colors"
@@ -378,7 +382,7 @@ export default function LeaveManagement() {
                             <ArrowRight className="w-4 h-4" />
                           </button>
                         )}
-                        {(lr.status === 'departed' || lr.status === 'overdue_return') && (
+                        {canConfirmReturn(currentNurse?.role) && (lr.status === 'departed' || lr.status === 'overdue_return') && (
                           <button
                             onClick={() => handleReturn(lr.id)}
                             className="p-1.5 text-green-600 hover:bg-green-50 rounded-md transition-colors"
